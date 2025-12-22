@@ -163,6 +163,7 @@ def unlearn(
     loss_type: LossType = LossType.CORPUS,
     steering_coeff: float = 20,
     max_samples: int = None,
+    lora_rank: int = 0,
 ):
     if unlearn_type.value == UnlearnType.NOT_SPECIFIED.value:
         raise Exception("Must specify unlearning type")
@@ -209,6 +210,48 @@ def unlearn(
                 data_format=data_format,
                 loss_type=loss_type,
                 max_samples=max_samples,
+            )
+        )
+
+    elif unlearn_type.value == UnlearnType.LORA.value:
+        import unlearn_corpus
+        (
+            model_path,
+            forget_accs, forget_accs_calibrated, forget_logits_dict,
+            retain_accs, retain_accs_calibrated, retain_logits_dict,
+            retain_accs_5_shot, retain_accs_5_shot_calibrated,
+            retain_logits_5_shot_dict,
+            samples
+        ) = (
+            unlearn_corpus.main(
+                unlearn_type=UnlearnType.GD,
+                train_files=unlearn_files,
+                wrong_unlearn_files=wrong_unlearn_files,
+                fixed_wrong_unlearn_files=fixed_wrong_unlearn_files,
+                val_files=val_files,
+                dev_set=dev_file,
+                retain_files=retain_files,
+                val_retain_files=val_retain_files,
+                retain_dev_file=retain_dev_file,
+                base_model=base_model,
+                lr=lr,
+                name=save_name,
+                epochs=epochs,
+                batch_size=batch_size,
+                val_batch_size=val_batch_size,
+                retain_coeff=retain_coeff,
+                warmup_steps=warmup_steps,
+                data_seed=data_seed,
+                eval_every=eval_every,
+                save_name=save_name,
+                project_name=wandb_project_name,
+                freeze_layers=unlearn_freeze_layers,
+                mcq=mcq,
+                hydra_dict=hydra_dict,
+                data_format=data_format,
+                loss_type=loss_type,
+                max_samples=max_samples,
+                lora_rank=lora_rank,
             )
         )
 
