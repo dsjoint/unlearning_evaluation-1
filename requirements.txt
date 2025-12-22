@@ -80,3 +80,4 @@ update==0.0.1
 urllib3==2.2.3
 wandb==0.18.3
 wcwidth==0.2.13
+peft>=0.12.0
