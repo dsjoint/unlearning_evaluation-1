@@ -15,7 +15,7 @@ num_gpus: 8
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
 #model_id: "meta-llama/Meta-Llama-3-8B"
 # model_id: "models/random_bd/lr2e-07-epoch15"
-model_id: "HuggingFaceH4/zephyr-7b-beta"
+model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 num_layers: ${get_num_layers:${model_id}}
 datasets: [MMLU]
 wandb_project_name: "thrd_CUT_GD_WMDP_mcq_fineweb_with_ft"
