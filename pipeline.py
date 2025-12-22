@@ -484,6 +484,7 @@ def main(
                 "hydra_dict": hydra_dict,
                 "steering_coeff": steering_coeff,
                 "max_samples": max_samples,
+                "lora_rank": lora_rank,
             }
 
             unlearn_res_dir = os.path.join(results_dir, "unlearning")
