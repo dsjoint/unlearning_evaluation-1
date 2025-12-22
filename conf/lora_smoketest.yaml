@@ -1,0 +1,32 @@
+defaults:
+  - default
+  - _self_
+
+# Minimal smoketest config (runs in minutes)
+just_eval: false
+dont_ft: true
+testing: true
+
+model_id: "HuggingFaceH4/zephyr-7b-beta"
+datasets: [MMLU]
+wandb_project_name: "lora_smoketest"
+
+unlearn:
+  types: [LORA]
+  lora_ranks: [4]
+  max_samples_lst: [32]
+  save_unlearn_model: true
+  types_config:
+    LORA:
+      loss_type: CORPUS
+      datasets_config:
+        MMLU:
+          epochs_lst: [1]
+          lrs: [4e-7]
+          rcs:
+            range: []
+            add: [1]
+
+batch_size: 4
+val_batch_size: 8
+eval_every: 1
