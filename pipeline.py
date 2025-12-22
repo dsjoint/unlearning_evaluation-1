@@ -28,6 +28,7 @@ class UnlearnType(Enum):
     GD = auto()  # Gradiend Difference
     WHP = auto() # Random Incorrect Fact
     FWF = auto() # Fixed Incorrect Fact
+    LORA = auto()  # LoRA-based unlearning
     NOT_SPECIFIED = auto()
 
 class LossType(Enum):
