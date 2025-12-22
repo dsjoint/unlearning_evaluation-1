@@ -1,0 +1,15 @@
+# Optional flash-attn support for faster attention computation
+# 
+# Install with: pip install -r requirements-flash.txt
+#
+# Requirements:
+# - CUDA-enabled GPU with compute capability >= 7.5
+# - CUDA toolkit installed
+# - Appropriate GPU drivers
+#
+# Note: flash-attn requires compilation and may not work on all systems.
+# If installation fails, the project will still work using PyTorch's
+# scaled dot-product attention (sdpa) as a fallback.
+
+flash-attn==2.4.2
+

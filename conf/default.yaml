@@ -11,6 +11,13 @@ dont_ft: false
 testing: false
 raise_exceptions: false
 
+# Attention backend: auto, flash_attention_2, sdpa, or eager
+# - auto (default): Use flash_attention_2 if available, otherwise sdpa
+# - flash_attention_2: Use flash attention (requires flash-attn package)
+# - sdpa: Use PyTorch's scaled dot-product attention
+# - eager: Use standard PyTorch attention (slowest, most compatible)
+attn_backend: auto
+
 num_gpus: 8
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
 #model_id: "meta-llama/Meta-Llama-3-8B"

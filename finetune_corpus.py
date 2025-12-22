@@ -16,6 +16,7 @@ from enum import Enum, auto
 import fcntl
 from pipeline import LossType, DataFormat
 import datetime
+from utils.attention_backend import get_attn_implementation
 
 
 class Point(TypedDict):
@@ -302,6 +303,7 @@ def main(
     save_every: int = 21,
     hydra_dict: dict = {},
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
+    attn_backend: Optional[str] = None,
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
 
@@ -314,8 +316,9 @@ def main(
     tokenizer.truncation_side = "left"
 
     label_possibilities = [tokenizer.encode(f"{t}. ", add_special_tokens=False)[0] for t in doc_to_choice]
+    attn_impl = get_attn_implementation(attn_backend)
     model = AutoModelForCausalLM.from_pretrained(
-        base_model, torch_dtype=torch.float16, attn_implementation="flash_attention_2"
+        base_model, torch_dtype=torch.float16, attn_implementation=attn_impl
     ).to(device)
 
     if freeze_layers is not None:

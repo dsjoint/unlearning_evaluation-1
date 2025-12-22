@@ -4,6 +4,45 @@
 This repository contains the code for the paper "Do Unlearning Methods Remove Information from Language Model Weights?".
 ![Mutual Information Graph](images/mi.png)
 
+## Installation
+
+### Default Installation (without flash-attn)
+
+```bash
+pip install -r requirements.txt
+```
+
+This uses PyTorch's built-in scaled dot-product attention (SDPA), which works on all GPUs.
+
+### Optional: Enable Flash Attention (for faster training)
+
+If you have a compatible GPU (Ampere or newer) and CUDA toolkit installed:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-flash.txt
+```
+
+**Note:** Flash attention is optional. The codebase automatically falls back to SDPA if flash-attn is not installed.
+
+### Attention Backend Configuration
+
+You can control the attention implementation via the `attn_backend` config option:
+
+```bash
+# Auto-detect (default): uses flash if available, otherwise SDPA
+python pipeline.py attn_backend=auto
+
+# Force SDPA (PyTorch scaled dot-product attention)
+python pipeline.py attn_backend=sdpa
+
+# Force flash attention (will fall back to SDPA if not available)
+python pipeline.py attn_backend=flash_attention_2
+
+# Force eager attention (slowest, most compatible)
+python pipeline.py attn_backend=eager
+```
+
 ## Repository Structure
 
 - `pipeline.py`: Main orchestration script for experiments.
@@ -11,6 +50,7 @@ This repository contains the code for the paper "Do Unlearning Methods Remove In
 - `finetune_corpus.py`: Used for fine-tuning and RTT.
 - `conf/`: Hydra configuration files.
 - `data/`: Directory for dataset files.
+- `utils/`: Utility modules (attention backend, etc.).
 
 ## Key Components
 - The main experimental logic is in `pipeline.py`. Start here to understand the overall flow.

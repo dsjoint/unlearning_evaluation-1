@@ -9,7 +9,8 @@ click==8.1.7
 docker-pycreds==0.4.0
 einops==0.8.0
 filelock==3.16.1
-flash-attn==2.4.2
+# flash-attn is optional - install separately with: pip install flash-attn
+# See requirements-flash.txt for optional flash attention support
 frozenlist==1.4.1
 fsspec==2024.9.0
 gdown==5.2.0

@@ -17,6 +17,7 @@ from enum import Enum, auto
 import logging
 from pipeline import UnlearnType, LossType, DataFormat
 from peft import get_peft_model, LoraConfig, TaskType
+from utils.attention_backend import get_attn_implementation
 
 MAX_SEQ_LEN = 512
 
@@ -482,6 +483,7 @@ def main(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    attn_backend: Optional[str] = None,
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
 
@@ -506,8 +508,9 @@ def main(
     if model is not None:
         model = model
     else:
+        attn_impl = get_attn_implementation(attn_backend)
         model = AutoModelForCausalLM.from_pretrained(
-            base_model, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2",
+            base_model, torch_dtype=torch.bfloat16, attn_implementation=attn_impl,
         ).to(device)
 
     if freeze_layers is not None:
@@ -983,6 +986,7 @@ def just_eval(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    attn_backend: Optional[str] = None,
 ):
     return main(
         train_files,
@@ -1024,4 +1028,5 @@ def just_eval(
 	mcq=mcq,
 	data_format=data_format,
 	loss_type=loss_type,
+	attn_backend=attn_backend,
     )

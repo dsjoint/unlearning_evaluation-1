@@ -164,6 +164,7 @@ def unlearn(
     steering_coeff: float = 20,
     max_samples: int = None,
     lora_rank: int = 0,
+    attn_backend: Optional[str] = None,
 ):
     if unlearn_type.value == UnlearnType.NOT_SPECIFIED.value:
         raise Exception("Must specify unlearning type")
@@ -210,6 +211,7 @@ def unlearn(
                 data_format=data_format,
                 loss_type=loss_type,
                 max_samples=max_samples,
+                attn_backend=attn_backend,
             )
         )
 
@@ -252,6 +254,7 @@ def unlearn(
                 loss_type=loss_type,
                 max_samples=max_samples,
                 lora_rank=lora_rank,
+                attn_backend=attn_backend,
             )
         )
 
@@ -351,6 +354,7 @@ def main(
     steering_coeff: float = 20, # for RMU
     max_samples: int = 9999999999, # limit number of datapoints for unlearning
     lora_rank: int = 0,  # LoRA rank (0 = disabled)
+    attn_backend: Optional[str] = None,  # Attention backend: auto, flash_attention_2, sdpa, eager
 ):
     try:
         if not only_ft:
@@ -384,6 +388,7 @@ def main(
                     hydra_dict=hydra_dict,
                     data_format=unlearn_data_format,
                     max_samples=max_samples,
+                    attn_backend=attn_backend,
                 )
                 (
                     model_path,
@@ -425,6 +430,7 @@ def main(
                     steering_coeff=steering_coeff,
                     max_samples=max_samples,
                     lora_rank=lora_rank,
+                    attn_backend=attn_backend,
                 )
                 (
                     model_path,
@@ -552,6 +558,7 @@ def main(
                                     dont_eval=ft_dont_eval,
                                     hydra_dict=hydra_dict,
                                     data_format=ft_data_format,
+                                    attn_backend=attn_backend,
                                 )
                             ]
                     else:
@@ -586,6 +593,7 @@ def main(
                                 dont_eval=ft_dont_eval,
                                 hydra_dict=hydra_dict,
                                 data_format=ft_data_format,
+                                attn_backend=attn_backend,
                             )
                         ]
         
@@ -1163,6 +1171,9 @@ def run_pipeline(cfg: DictConfig) -> None:
         save_unlearn_model = OmegaConf.select(
             cfg, "unlearn.save_unlearn_model", default=True
         )
+        attn_backend = OmegaConf.select(
+            cfg, "attn_backend", default="auto"
+        )
 
         # Logs hyperparameters to wandb
         config_flat = flatten_dict(OmegaConf.to_container(cfg, resolve=True))
@@ -1306,6 +1317,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 steering_coeff=sc,
                                                 max_samples=max_samples,
                                                 lora_rank=lora_rank,
+                                                attn_backend=attn_backend,
                                             )]
         elif only_ft:
             for ft_model_path, dataset in ft_model_paths:
@@ -1371,6 +1383,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                     unlearn_data_format=unlearn_data_format,
                     ft_data_format=ft_data_format,
                     unlearn_loss_type=unlearn_loss_type,
+                    attn_backend=attn_backend,
                 )]
 
 
@@ -1438,6 +1451,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                         unlearn_data_format=unlearn_data_format,
                         ft_data_format=ft_data_format,
                         unlearn_loss_type=unlearn_loss_type,
+                        attn_backend=attn_backend,
                     )]
 
         for ref in refs:

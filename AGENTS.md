@@ -492,7 +492,9 @@ python pipeline.py num_gpus=4  # Limit to 4 GPUs
 
 - **Minimum**: 1 GPU with ≥24GB VRAM (for 7B models with bfloat16)
 - **Recommended**: 8× A100/H100 GPUs for full hyperparameter sweeps
-- Flash Attention 2 is required: (`unlearn_corpus.py:508`) `attn_implementation="flash_attention_2"`
+- Flash Attention 2 is optional but recommended for faster training on compatible GPUs (Ampere or newer)
+- By default, the codebase uses PyTorch's SDPA (scaled dot-product attention) if flash-attn is not available
+- See `utils/attention_backend.py` for the attention backend selection logic
 
 ### Current GPU Resources (Detected)
 
