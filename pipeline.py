@@ -350,6 +350,7 @@ def main(
     unlearn_loss_type: LossType = LossType.CORPUS,
     steering_coeff: float = 20, # for RMU
     max_samples: int = 9999999999, # limit number of datapoints for unlearning
+    lora_rank: int = 0,  # LoRA rank (0 = disabled)
 ):
     try:
         if not only_ft:
@@ -423,6 +424,7 @@ def main(
                     loss_type=unlearn_loss_type,
                     steering_coeff=steering_coeff,
                     max_samples=max_samples,
+                    lora_rank=lora_rank,
                 )
                 (
                     model_path,
