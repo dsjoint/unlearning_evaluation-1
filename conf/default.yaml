@@ -30,6 +30,7 @@ unlearn:
   types: [GD]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
+  lora_ranks: [1, 2, 4, 8, 16, 32]
   save_unlearn_model: true
   # A list of lists; resolves to coefficient * num_layers. ex: [[0, "0.5"]]
   freeze_layers_coeffs: null
@@ -241,6 +242,45 @@ unlearn:
         RANDOM_BD:
           epochs_lst: [5]
           lrs: [4e-7, 8e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+    LORA:
+      loss_type: CORPUS
+      datasets_config:
+        YEARS:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+        YEARS_MMLU_RETAIN:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+        MMLU:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+        WMDP_MCQ_CORPUS:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+        WMDP_MCQ_CORPUS_FINEWEB:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            range: ${get_log_range:1e-3, 1e3, 10}
+            add: [0, 2, 4]
+        RANDOM_BD:
+          epochs_lst: [5]
+          lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
