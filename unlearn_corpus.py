@@ -895,6 +895,7 @@ def remote_main(
     hydra_dict: dict = {},
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
+    lora_rank: int = 0,
 ):
     return main(
         train_files,
@@ -931,11 +932,12 @@ def remote_main(
         results_file,
         just_eval,
         disable_wandb,
-        hydra_dict=hydra_dict,
+	hydra_dict=hydra_dict,
 	freeze_layers=freeze_layers,
 	mcq=mcq,
 	data_format=data_format,
 	loss_type=loss_type,
+        lora_rank=lora_rank,
     )
 
 @ray.remote(num_gpus=1)
@@ -980,6 +982,7 @@ def just_eval(
     hydra_dict: dict = {},
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
+    lora_rank: int = 0,
 ):
     return main(
         train_files,
