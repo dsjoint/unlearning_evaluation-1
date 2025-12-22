@@ -1156,6 +1156,9 @@ def run_pipeline(cfg: DictConfig) -> None:
         max_samples_lst = OmegaConf.select(
             cfg, "unlearn.max_samples_lst", default=[999999999]
         )
+        lora_ranks = OmegaConf.select(
+            cfg, "unlearn.lora_ranks", default=[0]
+        )
         save_unlearn_model = OmegaConf.select(
             cfg, "unlearn.save_unlearn_model", default=True
         )
@@ -1213,85 +1216,96 @@ def run_pipeline(cfg: DictConfig) -> None:
                                             == UnlearnType.CUT.value
                                         ) else [20]
                                     )
-                                    for sc in scs: #!
-                                        forget_model = (
-                                            f"models/{unlearn_type.name}/"
-                                            f"{dataset.name}/"
-                                            f"{wandb_project_name}/{sc=}" #!
-                                            f"{model_id}-rc{rc}-lr{lr}-"
-                                            f"epochs{epochs}"
-                                        )
-                                        save_name = (
-                                            forget_model if save_unlearn_model
-                                            else None
-                                        )
-                                        refs += [main.remote(
-                                            unlearn_type=unlearn_type,
-                                            dataset=dataset,
-                                            unlearn_files=(
-                                                dataset_dict["unlearn_files"]
-                                            ),
-                                            wrong_unlearn_files=(
-                                                dataset_dict.get(
-                                                    "wrong_unlearn_files", []
-                                            )),
-                                            fixed_wrong_unlearn_files = (
-                                                dataset_dict.get(
-                                                    "fixed_wrong_unlearn_files",
-                                                    []
-                                                )
-                                            ),
-                                            val_files=dataset_dict["val_files"],
-                                            dev_file=dataset_dict["dev_file"],
-                                            retain_files=(
-                                                dataset_dict["retain_files"]
-                                            ),
-                                            val_retain_files=dataset_dict[
-                                                "val_retain_files"
-                                            ],
-                                            retain_dev_file=dataset_dict[
-                                                "retain_dev_file"
-                                            ],
-                                            base_model=model_id,
-                                            lr=lr,
-                                            epochs=epochs,
-                                            batch_size=batch_size,
-                                            val_batch_size=val_batch_size,
-                                            retain_coeff=rc,
-                                            warmup_steps=warmup_steps,
-                                            data_seed=data_seed,
-                                            eval_every=eval_every,
-                                            save_name=save_name,
-                                            name=forget_model,
-                                            wandb_project_name=(
-                                                wandb_project_name
-                                            ),
-                                            results_dir=results_dir,
-                                            only_ft=only_ft,
-                                            ft_model_path="",
-                                            num_ft_splits=num_ft_splits,
-                                            ft_loss_types=ft_loss_types,
-                                            ft_lrs=ft_lrs,
-                                            ft_epochs_lst=ft_epochs_lst,
-                                            save_ft_models=save_ft_models,
-                                            start_time=curr_time_str,
-                                            start_time_sf=start_time_sf_str,
-                                            dont_ft=dont_ft,
-                                            unlearn_freeze_layers=(
-                                                unlearn_freeze_layers
-                                            ),
-                                            ft_freeze_layers=ft_freeze_layers,
-                                            ft_dont_eval=ft_dont_eval,
-                                            unlearn_mcq=unlearn_mcq,
-                                            hydra_dict=config_flat,
-                                            unlearn_data_format=(
-                                                unlearn_data_format
-                                            ),
-                                            ft_data_format=ft_data_format,
-                                            unlearn_loss_type=unlearn_loss_type,
-                                            steering_coeff=sc, 
-                                            max_samples=max_samples,
-                                        )]
+                                    ranks = (
+                                        lora_ranks
+                                        if (
+                                            unlearn_type.value
+                                            == UnlearnType.LORA.value
+                                        ) else [0]
+                                    )
+                                    for sc in scs:
+                                        for lora_rank in ranks:
+                                            forget_model = (
+                                                f"models/{unlearn_type.name}/"
+                                                f"{dataset.name}/"
+                                                f"{wandb_project_name}/"
+                                                f"rank{lora_rank}-sc{sc}-"
+                                                f"{model_id}-rc{rc}-lr{lr}-"
+                                                f"epochs{epochs}"
+                                            )
+                                            save_name = (
+                                                forget_model if save_unlearn_model
+                                                else None
+                                            )
+                                            refs += [main.remote(
+                                                unlearn_type=unlearn_type,
+                                                dataset=dataset,
+                                                unlearn_files=(
+                                                    dataset_dict["unlearn_files"]
+                                                ),
+                                                wrong_unlearn_files=(
+                                                    dataset_dict.get(
+                                                        "wrong_unlearn_files",
+                                                        []
+                                                )),
+                                                fixed_wrong_unlearn_files = (
+                                                    dataset_dict.get(
+                                                        "fixed_wrong_unlearn_files",
+                                                        []
+                                                    )
+                                                ),
+                                                val_files=dataset_dict["val_files"],
+                                                dev_file=dataset_dict["dev_file"],
+                                                retain_files=(
+                                                    dataset_dict["retain_files"]
+                                                ),
+                                                val_retain_files=dataset_dict[
+                                                    "val_retain_files"
+                                                ],
+                                                retain_dev_file=dataset_dict[
+                                                    "retain_dev_file"
+                                                ],
+                                                base_model=model_id,
+                                                lr=lr,
+                                                epochs=epochs,
+                                                batch_size=batch_size,
+                                                val_batch_size=val_batch_size,
+                                                retain_coeff=rc,
+                                                warmup_steps=warmup_steps,
+                                                data_seed=data_seed,
+                                                eval_every=eval_every,
+                                                save_name=save_name,
+                                                name=forget_model,
+                                                wandb_project_name=(
+                                                    wandb_project_name
+                                                ),
+                                                results_dir=results_dir,
+                                                only_ft=only_ft,
+                                                ft_model_path="",
+                                                num_ft_splits=num_ft_splits,
+                                                ft_loss_types=ft_loss_types,
+                                                ft_lrs=ft_lrs,
+                                                ft_epochs_lst=ft_epochs_lst,
+                                                save_ft_models=save_ft_models,
+                                                start_time=curr_time_str,
+                                                start_time_sf=start_time_sf_str,
+                                                dont_ft=dont_ft,
+                                                unlearn_freeze_layers=(
+                                                    unlearn_freeze_layers
+                                                ),
+                                                ft_freeze_layers=ft_freeze_layers,
+                                                ft_dont_eval=ft_dont_eval,
+                                                unlearn_mcq=unlearn_mcq,
+                                                hydra_dict=config_flat,
+                                                unlearn_data_format=(
+                                                    unlearn_data_format
+                                                ),
+                                                ft_data_format=ft_data_format,
+                                                unlearn_loss_type=unlearn_loss_type,
+                                                steering_coeff=sc,
+                                                max_samples=max_samples,
+                                                lora_rank=lora_rank,
+                                            )]
         elif only_ft:
             for ft_model_path, dataset in ft_model_paths:
                 dataset = Datasets[dataset]
