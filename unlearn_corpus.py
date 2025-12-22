@@ -16,6 +16,7 @@ from filelock import FileLock
 from enum import Enum, auto
 import logging
 from pipeline import UnlearnType, LossType, DataFormat
+from peft import get_peft_model, LoraConfig, TaskType
 
 MAX_SEQ_LEN = 512
 
@@ -480,6 +481,7 @@ def main(
     hydra_dict: dict = {},
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
+    lora_rank: int = 0,
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
 
@@ -511,7 +513,32 @@ def main(
     if freeze_layers is not None:
         freeze_model_layers(model, freeze_layers)
 
-    optimizer = Lion(model.parameters(), lr=lr, use_triton=True)
+    # LoRA setup
+    if lora_rank > 0:
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=lora_rank,
+            lora_alpha=lora_rank * 2,
+            lora_dropout=0.0,
+            target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+
+    # Only optimize trainable parameters (LoRA params if lora_rank > 0).
+    optimizer = Lion(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=lr,
+        use_triton=True,
+    )
 
     if unlearn_type.value == UnlearnType.GD.value:
         train_dataset = load_jsonl([f"data/{file}.jsonl" for file in train_files])
@@ -785,6 +812,9 @@ def main(
     if not just_eval or not evaled_0:
         eval(epochs)
     if save_name is not None:
+        # Merge LoRA weights into base model if applicable.
+        if lora_rank > 0:
+            model = model.merge_and_unload()
         model.save_pretrained(save_name)
         tokenizer.save_pretrained(save_name)
     
@@ -992,4 +1022,3 @@ def just_eval(
 	data_format=data_format,
 	loss_type=loss_type,
     )
-
