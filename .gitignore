@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Hydra outputs
+.hydra/
+outputs/
+
+# Runtime artifacts
+*.log
+*.out
+pipeline_error.log
+pipeline.out
+
+# Generated data (large files)
+models/
+evals/
+
+# WandB
+wandb/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Data artifacts (can be regenerated)
+data/MANIFEST.json
+data/fineweb_edu_seed-42/
+data/wikitext/
+data/beavertails/
+

@@ -251,6 +251,16 @@ def load_jsonl(files):
         
     return dataset
 
+
+def _data_path(data_root: str, rel_path: str, ext: str = ".jsonl") -> str:
+    if os.path.isabs(rel_path):
+        base = rel_path
+    else:
+        base = os.path.join(data_root, rel_path)
+    if ext and not base.endswith(ext):
+        base += ext
+    return base
+
 def freeze_model_layers(model, tuples):
     frozen = []
     not_frozen = []
@@ -277,6 +287,7 @@ def main(
     base_model: str,
     lr: float,
     name: str,
+    data_root: str = "data",
     k_shot: int = 0,
     epochs: int = 10,
     batch_size: int = 4,
@@ -326,19 +337,25 @@ def main(
 
     optimizer = Lion(model.parameters(), lr=lr, use_triton=True)
 
-    train_dataset = load_jsonl([f"data/{file}.jsonl" for file in train_files])
+    train_dataset = load_jsonl(
+        [_data_path(data_root, file) for file in train_files]
+    )
     random.Random(data_seed).shuffle(train_dataset)
 
     if max_samples is not None:
         train_dataset = train_dataset[:max_samples]
 
     if not dont_eval:
-        val_dataset = load_jsonl([f"data/{file}.jsonl" for file in val_files])
+        val_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in val_files]
+        )
 
-    dev_dataset = load_jsonl([f"data/{dev_set}.jsonl"])
+    dev_dataset = load_jsonl([_data_path(data_root, dev_set)])
 
     if not dont_eval:
-        val_retain_dataset = load_jsonl([f"data/{file}.jsonl" for file in val_retain_files])
+        val_retain_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in val_retain_files]
+        )
 
     train_dataset = make_k_shot(train_dataset, dev_dataset, k_shot)
     if not dont_eval:
@@ -346,7 +363,7 @@ def main(
 
     if keep_set is not None:
         assert k_shot == 0
-        keep_dataset = json.load(open(f"data/{keep_set}.json"))
+        keep_dataset = json.load(open(_data_path(data_root, keep_set, ".json")))
         batch_size //= 2
     
     model_name = base_model.split('/')[-1]
@@ -504,4 +521,3 @@ def main(
         "project_name": project_name,
         "samples": samples
     }
-

@@ -10,13 +10,19 @@ This document provides a comprehensive guide to the repository for the paper *"D
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Run the default experiment (GD unlearning on MMLU dataset)
+# 2. Materialize required data (fails fast if data already exists)
+python scripts/materialize_data.py datasets=[MMLU]
+
+# 3. Validate required data artifacts
+python scripts/check_data.py datasets=[MMLU]
+
+# 4. Run the default experiment (LORA unlearning on YEARS dataset)
 python pipeline.py
 
-# 3. Run with a specific config
+# 5. Run with a specific config
 python pipeline.py --config-name=just_eval
 
-# 4. Override specific parameters
+# 6. Override specific parameters
 python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 ```
 
@@ -33,6 +39,7 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 
 - Always run tests or a minimal validation after every code change.
 - Always choose the most efficient implementation path given available resources (e.g., prefer GPU-accelerated configs over CPU fallbacks when GPUs are available).
+- Minimal validation: `python scripts/check_data.py datasets=[YEARS]`.
 - TODO: Implement a minimal smoketest that completes in a few minutes (faster than running `pipeline.py`).
 
 ---
@@ -52,6 +59,11 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 | `data/wmdp-deduped/` | WMDP benchmark (bio/cyber security) | (`pipeline.py:738-815`) multiple WMDP dataset configs |
 | `data/random_bd/` | Random birthdays dataset | (`pipeline.py:926-948`) `datasets_dict[Datasets.RANDOM_BD]` |
 | `requirements.txt` | Python dependencies with versions | (`requirements.txt:1-82`) |
+| `data/requirements.py` | Dataset requirements + aliasing | (`data/requirements.py:1-220`) |
+| `data/validate_data.py` | Dataset validation helper | (`data/validate_data.py:1-80`) |
+| `scripts/materialize_data.py` | Materialize minimal datasets | (`scripts/materialize_data.py:1-220`) |
+| `scripts/check_data.py` | Validate required artifacts | (`scripts/check_data.py:1-80`) |
+| `DATA.md` | Data materialization & validation guide | (`DATA.md:1-60`) |
 | `images/` | Figures for README | (`README.md:5`) |
 
 ---
@@ -94,13 +106,14 @@ The pipeline supports three main modes controlled by config flags:
 
 1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1051-1052`)
 2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1048`)
-3. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
+3. **Validation**: Required artifacts are validated before running (see `data/validate_data.py`)
+4. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
    - **Unlearning Phase**: Call `unlearn()` remote function → saves model to `models/`
    - **Metrics Logging**: Write unlearning metrics to `evals/pipeline/unlearning/*.csv`
-4. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
+5. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
    - Call `finetune_corpus.main()` remote function
    - Write fine-tuning metrics to `evals/pipeline/ft/*.csv`
-5. **Cleanup**: Ray shutdown (`pipeline.py:1406`)
+6. **Cleanup**: Ray shutdown (`pipeline.py:1406`)
 
 ### Pipeline Stages with Code Locations
 
@@ -113,6 +126,13 @@ User Invocation (CLI)
 │ (pipeline.py:1048-1130)                                      │
 │ - Resolves ${get_log_range:...}, ${get_num_layers:...}      │
 │ - Logs config to wandb                                       │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Data Validation                                              │
+│ (data/validate_data.py:1-80)                                 │
+│ - Ensures required artifacts exist                           │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
@@ -224,6 +244,7 @@ User Invocation (CLI)
 | Fine-tuned Model | `finetune_corpus.main()` | Evaluation | HF format | `models/fted/{...}/lr{lr}-epoch{epochs}` | `ft.save_models` | (`pipeline.py:470-475`) |
 | Unlearning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/unlearning/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:443-455`) |
 | Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:589-600`) |
+| Data Manifest | `scripts/materialize_data.py` | Analysis | JSON | `data/MANIFEST.json` | `data_root` | (`scripts/materialize_data.py:190-210`) |
 | WandB Logs | `wandb.log()` | Monitoring | WandB | N/A | `wandb_project_name` | (`unlearn_corpus.py:699-712`) |
 | Error Logs | Exception handler | Debugging | Text | `pipeline_error.log` | N/A | (`pipeline.py:610-617`) |
 
@@ -368,6 +389,7 @@ ft:
 # Output
 results_dir: "evals/pipeline"
 wandb_project_name: "experiment_name"
+data_root: "data"
 ```
 **Evidence:** (`conf/default.yaml:1-263`)
 
@@ -495,6 +517,8 @@ python pipeline.py num_gpus=4  # Limit to 4 GPUs
 - Flash Attention 2 is optional but recommended for faster training on compatible GPUs (Ampere or newer)
 - By default, the codebase uses PyTorch's SDPA (scaled dot-product attention) if flash-attn is not available
 - See `utils/attention_backend.py` for the attention backend selection logic
+- Dataset paths are validated before pipeline run; missing artifacts produce a fail-fast error with a materialization command.
+- Override the data root via `UNLEARN_DATA_ROOT` or `data_root` in Hydra config.
 
 ### Current GPU Resources (Detected)
 

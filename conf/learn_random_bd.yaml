@@ -6,15 +6,15 @@ defaults:
 just_eval: false
 eval_model_paths: [""]
 only_ft: true
-ft_model_paths: [["meta-llama/Meta-Llama-3-8B", "RANDOM_BD_ALL_SPLITS"]]
+ft_model_paths: [["TinyLlama/TinyLlama-1.1B-Chat-v1.0", "RANDOM_BD_ALL_SPLITS"]]
 ft_on_all: true
 dont_ft: false
 testing: false
 raise_exceptions: false
 
-num_gpus: 8
+num_gpus: 1
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
-model_id: "meta-llama/Meta-Llama-3-8B"
+model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 num_layers: ${get_num_layers:${model_id}}
 datasets: [RANDOM_BD_ALL_SPLITS]
 wandb_project_name: "frozen_learn_letter_answer_random_bd_all"

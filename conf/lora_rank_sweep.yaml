@@ -7,7 +7,7 @@ just_eval: false
 dont_ft: false
 testing: false
 
-model_id: "HuggingFaceH4/zephyr-7b-beta"
+model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 datasets: [MMLU]
 wandb_project_name: "lora_rank_sweep"
 

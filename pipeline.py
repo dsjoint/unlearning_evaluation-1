@@ -21,6 +21,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import wandb
 from dotenv import load_dotenv
+from data.requirements import resolve_dataset_path
+from data.validate_data import validate_required_artifacts
 
 # class definitions for hyperparameter configurations
 class UnlearnType(Enum):
@@ -78,6 +80,43 @@ def get_current_time(timezone="America/Los_Angeles"):
 def is_after_6pm():
     current_time = get_current_time().time()
     return current_time >= datetime.time(18, 0)
+
+def get_runtime_cwd():
+    try:
+        from hydra.core.hydra_config import HydraConfig
+        return HydraConfig.get().runtime.cwd
+    except Exception:
+        return os.getcwd()
+
+def get_data_root(cfg: DictConfig) -> str:
+    data_root = os.getenv("UNLEARN_DATA_ROOT")
+    if not data_root:
+        data_root = OmegaConf.select(cfg, "data_root") or "data"
+    if not os.path.isabs(data_root):
+        data_root = os.path.join(get_runtime_cwd(), data_root)
+    return data_root
+
+def resolve_dataset_dict_paths(dataset_dict: dict, data_root: str) -> dict:
+    resolved = dict(dataset_dict)
+    list_keys = [
+        "unlearn_files",
+        "wrong_unlearn_files",
+        "fixed_wrong_unlearn_files",
+        "val_files",
+        "retain_files",
+        "val_retain_files",
+    ]
+    for key in list_keys:
+        if key in resolved:
+            resolved[key] = [
+                resolve_dataset_path(path, data_root)
+                for path in resolved.get(key, [])
+            ]
+    str_keys = ["dev_file", "retain_dev_file"]
+    for key in str_keys:
+        if key in resolved and resolved[key]:
+            resolved[key] = resolve_dataset_path(resolved[key], data_root)
+    return resolved
 
 # converts a nested dictionary into a flat one
 def flatten_dict(d, parent_key=''):
@@ -145,6 +184,7 @@ def unlearn(
     retain_files: list[str] = [],
     val_retain_files: list[str] = [],
     retain_dev_file: str = "",
+    data_root: str = "data",
     base_model: str = "",
     lr: float = 1e-7,
     epochs: int = 3,
@@ -193,6 +233,7 @@ def unlearn(
                 retain_files=retain_files,
                 val_retain_files=val_retain_files,
                 retain_dev_file=retain_dev_file,
+                data_root=data_root,
                 base_model=base_model,
                 lr=lr,
                 name=save_name,
@@ -235,6 +276,7 @@ def unlearn(
                 retain_files=retain_files,
                 val_retain_files=val_retain_files,
                 retain_dev_file=retain_dev_file,
+                data_root=data_root,
                 base_model=base_model,
                 lr=lr,
                 name=save_name,
@@ -317,6 +359,7 @@ def main(
     retain_files: list[str] = [], # jsonl files for retain dataset
     val_retain_files: list[str] = [], # for tracking accuracy on retain dataset
     retain_dev_file: str = "", # used to create few-shot prompts for retain set
+    data_root: str = "data",
     base_model: str = "", # path to model to perform unlearning on
     lr: float = 1e-7,
     epochs: int = 3,
@@ -370,6 +413,7 @@ def main(
                     retain_files=[],
                     val_retain_files=val_retain_files,
                     retain_dev_file=retain_dev_file,
+                    data_root=data_root,
                     base_model=base_model,
                     lr=lr,
                     name=name,
@@ -411,6 +455,7 @@ def main(
                     retain_files=retain_files,
                     val_retain_files=val_retain_files,
                     retain_dev_file=retain_dev_file,
+                    data_root=data_root,
                     base_model=base_model,
                     lr=lr,
                     epochs=epochs,
@@ -542,6 +587,7 @@ def main(
                                     val_files=ft_val_files,
                                     val_retain_files=ft_val_retain_files,
                                     dev_set=ft_files[0],
+                                    data_root=data_root,
                                     base_model=model_path,
                                     lr=lr,
                                     epochs=ft_epochs,
@@ -577,6 +623,7 @@ def main(
                                 val_files=ft_val_files,
                                 val_retain_files=ft_val_retain_files,
                                 dev_set=ft_files[0],
+                                data_root=data_root,
                                 base_model=model_path,
                                 lr=lr,
                                 epochs=ft_epochs,
@@ -696,7 +743,7 @@ datasets_dict = {
             for i in range(5)
         ],
         "val_files": [
-            f"ndates/split_{i}" for i in range(5)
+            f"dates-years-trimmed/split_{i}" for i in range(5)
         ],
         "retain_files": [
             f"fineweb_edu_seed-42/split_{i}" for i in range(5)
@@ -720,7 +767,7 @@ datasets_dict = {
             for i in range(5)
         ],
         "val_files": [
-            f"ndates/split_{i}" for i in range(5)
+            f"dates-years-trimmed/split_{i}" for i in range(5)
         ],
         "retain_files": [
             f"mmlu_cats_random_trimmed/corpus_mmlu_{mmlu_cats_forget[i]}"
@@ -749,7 +796,7 @@ datasets_dict = {
             ]
         ],
         "val_files": [
-            f"ndates/split_{i}" for i in range(5)
+            f"dates-years-trimmed/split_{i}" for i in range(5)
         ],
         "retain_files": [
             f"fineweb_edu_seed-42/split_{i}" for i in range(5)
@@ -792,7 +839,7 @@ datasets_dict = {
     },
     Datasets.WMDP_CORPUS: {
         "unlearn_files": [
-            f"wmdp/bio-forget-coprus",
+            f"wmdp/bio-forget-corpus",
             f"wmdp/cyber-forget-corpus"
         ],
         "val_files": [
@@ -810,7 +857,7 @@ datasets_dict = {
     },
     Datasets.WMDP_CORPUS_FINEWEB: {
         "unlearn_files": [
-            f"wmdp/bio-forget-coprus",
+            f"wmdp/bio-forget-corpus",
             f"wmdp/cyber-forget-corpus"
         ],
         "val_files": [
@@ -828,7 +875,7 @@ datasets_dict = {
     },
     Datasets.WMDP_CORPUS_MMLU: {
         "unlearn_files": [
-            f"wmdp/bio-forget-coprus",
+            f"wmdp/bio-forget-corpus",
             f"wmdp/cyber-forget-corpus"
         ],
         "val_files": [
@@ -1103,6 +1150,13 @@ config_file = "default"
 @hydra.main(config_path="conf", config_name=config_file, version_base=None)
 def run_pipeline(cfg: DictConfig) -> None:
     try:
+        data_root = get_data_root(cfg)
+        try:
+            validate_required_artifacts(cfg.datasets, data_root)
+        except FileNotFoundError as exc:
+            print(str(exc))
+            return
+
         num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()
         ray.init(num_gpus=num_gpus)
         refs = []
@@ -1207,7 +1261,9 @@ def run_pipeline(cfg: DictConfig) -> None:
                         dataset_config["rcs"]["range"]
                         + [float(rc) for rc in dataset_config["rcs"]["add"]]
                     )
-                    dataset_dict = datasets_dict[dataset]
+                    dataset_dict = resolve_dataset_dict_paths(
+                        datasets_dict[dataset], data_root
+                    )
                     print(f"""
                         {unlearn_type=}
                         {unlearn_loss_type=}
@@ -1277,6 +1333,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 retain_dev_file=dataset_dict[
                                                     "retain_dev_file"
                                                 ],
+                                                data_root=data_root,
                                                 base_model=model_id,
                                                 lr=lr,
                                                 epochs=epochs,
@@ -1336,7 +1393,9 @@ def run_pipeline(cfg: DictConfig) -> None:
                     dataset_config["rcs"]["range"]
                     + dataset_config["rcs"]["add"]
                 )
-                dataset_dict = datasets_dict[dataset]
+                dataset_dict = resolve_dataset_dict_paths(
+                    datasets_dict[dataset], data_root
+                )
                 refs += [main.remote(
                     unlearn_type=unlearn_types[0],
                     dataset=dataset,
@@ -1352,6 +1411,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                     retain_files=dataset_dict["retain_files"],
                     val_retain_files=dataset_dict["val_retain_files"],
                     retain_dev_file=dataset_dict["retain_dev_file"],
+                    data_root=data_root,
                     base_model=model_id,
                     lr=lrs[0],
                     epochs=2,
@@ -1405,7 +1465,9 @@ def run_pipeline(cfg: DictConfig) -> None:
                         dataset_config["rcs"]["range"]
                         + dataset_config["rcs"]["add"]
                     )
-                    dataset_dict = datasets_dict[dataset]
+                    dataset_dict = resolve_dataset_dict_paths(
+                        datasets_dict[dataset], data_root
+                    )
                     refs += [main.remote(
                         unlearn_type=unlearn_types[0],
                         dataset=dataset,
@@ -1421,6 +1483,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                         retain_files=dataset_dict["retain_files"],
                         val_retain_files=dataset_dict["val_retain_files"],
                         retain_dev_file=dataset_dict["retain_dev_file"],
+                        data_root=data_root,
                         base_model=model_id,
                         lr=lrs[0],
                         epochs=2,

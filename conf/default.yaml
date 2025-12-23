@@ -6,7 +6,7 @@ defaults:
 just_eval: false
 eval_model_paths: [""]
 only_ft: false
-ft_model_paths: [["meta-llama/Meta-Llama-3-8B", "WMDP"]]
+ft_model_paths: [["TinyLlama/TinyLlama-1.1B-Chat-v1.0", "WMDP"]]
 dont_ft: false
 testing: false
 raise_exceptions: false
@@ -18,15 +18,16 @@ raise_exceptions: false
 # - eager: Use standard PyTorch attention (slowest, most compatible)
 attn_backend: auto
 
-num_gpus: 8
+num_gpus: 1
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
 #model_id: "meta-llama/Meta-Llama-3-8B"
 # model_id: "models/random_bd/lr2e-07-epoch15"
 model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 num_layers: ${get_num_layers:${model_id}}
-datasets: [MMLU]
-wandb_project_name: "thrd_CUT_GD_WMDP_mcq_fineweb_with_ft"
+datasets: [YEARS]
+wandb_project_name: "lora_years_tinyllama_1_1b"
 results_dir: "evals/pipeline"
+data_root: "data"
 batch_size: 4
 val_batch_size: 8
 warmup_steps: 24
@@ -34,7 +35,7 @@ data_seed: 4
 eval_every: 1
 
 unlearn:
-  types: [GD]
+  types: [LORA]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
   lora_ranks: [1, 2, 4, 8, 16, 32]

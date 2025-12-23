@@ -61,14 +61,32 @@ python pipeline.py attn_backend=eager
 ## Running Experiments
 
 1. Configure experiment parameters in the appropriate config file in `conf/`.
-2. Execute experiments using:
+2. Materialize required data (minimal deterministic samples where supported):
+   ```
+   python scripts/materialize_data.py datasets=[MMLU]
+   ```
+3. Validate required artifacts:
+   ```
+   python scripts/check_data.py datasets=[MMLU]
+   ```
+4. Execute experiments using:
    ```
    python pipeline.py
    ```
 
 ## Data
 
-- Datasets should be placed in the `data/` directory.
+- Datasets should be placed in the `data/` directory by default.
+- Use `scripts/materialize_data.py` to build minimal datasets for common sources.
+- Validation is enforced before pipeline runs; missing artifacts produce an actionable error.
+
+### Data Root Override
+- Environment: `UNLEARN_DATA_ROOT=/path/to/data`
+- Hydra override: `data_root=/path/to/data`
+
+### Manifest
+- `scripts/materialize_data.py` writes `data/MANIFEST.json` describing materialized artifacts.
+
 ### Dateset Directories
 1. Years: `data/dates-years-trimmed`
 2. MMLU: `data/mmlu_cats_random_trimmed`

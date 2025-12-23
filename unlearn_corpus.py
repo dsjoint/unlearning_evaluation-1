@@ -442,6 +442,16 @@ def freeze_model_layers(model, tuples):
             frozen.append(name)
             not_frozen.remove(name)
 
+def _data_path(data_root: str, rel_path: str, ext: str = ".jsonl") -> str:
+    if os.path.isabs(rel_path):
+        base = rel_path
+    else:
+        base = os.path.join(data_root, rel_path)
+    if ext and not base.endswith(ext):
+        base += ext
+    return base
+
+
 def main(
     train_files: list[str],
     wrong_unlearn_files: list[str],
@@ -451,6 +461,7 @@ def main(
     base_model: str,
     lr: float,
     name: str,
+    data_root: str = "data",
     k_shot: int = 0,
     epochs: int = 10,
     batch_size: int = 4,
@@ -544,11 +555,17 @@ def main(
     )
 
     if unlearn_type.value == UnlearnType.GD.value:
-        train_dataset = load_jsonl([f"data/{file}.jsonl" for file in train_files])
+        train_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in train_files]
+        )
     elif unlearn_type.value == UnlearnType.WHP.value:
-        train_dataset = load_jsonl([f"data/{file}.jsonl" for file in wrong_unlearn_files])
+        train_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in wrong_unlearn_files]
+        )
     elif unlearn_type.value == UnlearnType.FWF.value:
-        train_dataset = load_jsonl([f"data/{file}.jsonl" for file in fixed_wrong_unlearn_files])
+        train_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in fixed_wrong_unlearn_files]
+        )
     else:
         raise Exception("Unlearning type not handled")
     
@@ -558,16 +575,28 @@ def main(
         train_dataset = train_dataset[:max_samples]
         print(f"capped samples at {max_samples=}")
 
-    val_datasets_lst = [(f"data/{file}.jsonl", load_jsonl([f"data/{file}.jsonl"])) for file in val_files]
-    dev_dataset = load_jsonl([f"data/{dev_set}.jsonl"])
-    retaing_dev_dataset = load_jsonl([f"data/{retain_dev_file}.jsonl"])
-    retain_dataset = load_jsonl ([f"data/{file}.jsonl" for file in retain_files])
-    val_retain_datasets_lst = [(f"data/{file}.jsonl", load_jsonl([f"data/{file}.jsonl"])) for file in val_retain_files]
+    val_datasets_lst = [
+        (_data_path(data_root, file), load_jsonl([_data_path(data_root, file)]))
+        for file in val_files
+    ]
+    dev_dataset = load_jsonl([_data_path(data_root, dev_set)])
+    retaing_dev_dataset = load_jsonl([_data_path(data_root, retain_dev_file)])
+    retain_dataset = load_jsonl(
+        [_data_path(data_root, file) for file in retain_files]
+    )
+    val_retain_datasets_lst = [
+        (_data_path(data_root, file), load_jsonl([_data_path(data_root, file)]))
+        for file in val_retain_files
+    ]
     val_retain_datasets_5_shot_lst = val_retain_datasets_lst.copy()
 
     if data_format.value == DataFormat.MCQ.value:
-        train_dataset = load_jsonl([f"data/{file}.jsonl" for file in val_files])
-        retain_dataset = load_jsonl ([f"data/{file}.jsonl" for file in val_retain_files])
+        train_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in val_files]
+        )
+        retain_dataset = load_jsonl(
+            [_data_path(data_root, file) for file in val_retain_files]
+        )
 
     if k_shot != 0:
         val_datasets_lst = [
@@ -577,7 +606,7 @@ def main(
 
     if keep_set is not None:
         assert k_shot == 0
-        keep_dataset = json.load(open(f"data/{keep_set}.json"))
+        keep_dataset = json.load(open(_data_path(data_root, keep_set, ".json")))
         batch_size //= 2
     
     forget_accs = {}
@@ -867,6 +896,7 @@ def remote_main(
     base_model: str,
     lr: float,
     name: str,
+    data_root: str = "data",
     k_shot: int = 4,
     epochs: int = 10,
     batch_size: int = 4,
@@ -899,48 +929,51 @@ def remote_main(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    attn_backend: Optional[str] = None,
 ):
     return main(
-        train_files,
-        wrong_unlearn_files,
-        fixed_wrong_unlearn_files,
-        val_files,
-        dev_set,
-        base_model,
-        lr,
-        name,
-        k_shot,
-        epochs,
-        batch_size,
-        val_batch_size,
-        warmup_steps,
-        retain_files,
-        val_retain_files,
-        retain_dev_file,
-        max_samples,
-        data_seed,
-        eval_every,
-        keep_set,
-        keep_set_weight,
-        train_on_wrong_answer,
-        train_set_size,
-        val_set_size,
-        kind,
-        save_name,
-        version,
-        model,
-        retain_coeff,
-        project_name,
-        unlearn_type,
-        results_file,
-        just_eval,
-        disable_wandb,
-	hydra_dict=hydra_dict,
-	freeze_layers=freeze_layers,
-	mcq=mcq,
-	data_format=data_format,
-	loss_type=loss_type,
+        train_files=train_files,
+        wrong_unlearn_files=wrong_unlearn_files,
+        fixed_wrong_unlearn_files=fixed_wrong_unlearn_files,
+        val_files=val_files,
+        dev_set=dev_set,
+        base_model=base_model,
+        lr=lr,
+        name=name,
+        data_root=data_root,
+        k_shot=k_shot,
+        epochs=epochs,
+        batch_size=batch_size,
+        val_batch_size=val_batch_size,
+        warmup_steps=warmup_steps,
+        retain_files=retain_files,
+        val_retain_files=val_retain_files,
+        retain_dev_file=retain_dev_file,
+        max_samples=max_samples,
+        data_seed=data_seed,
+        eval_every=eval_every,
+        keep_set=keep_set,
+        keep_set_weight=keep_set_weight,
+        train_on_wrong_answer=train_on_wrong_answer,
+        train_set_size=train_set_size,
+        val_set_size=val_set_size,
+        kind=kind,
+        save_name=save_name,
+        version=version,
+        model=model,
+        retain_coeff=retain_coeff,
+        project_name=project_name,
+        unlearn_type=unlearn_type,
+        results_file=results_file,
+        just_eval=just_eval,
+        disable_wandb=disable_wandb,
+        hydra_dict=hydra_dict,
+        freeze_layers=freeze_layers,
+        mcq=mcq,
+        data_format=data_format,
+        loss_type=loss_type,
         lora_rank=lora_rank,
+        attn_backend=attn_backend,
     )
 
 @ray.remote(num_gpus=1)
@@ -954,6 +987,7 @@ def just_eval(
     base_model: str,
     lr: float,
     name: str,
+    data_root: str = "data",
     k_shot: int = 0,
     epochs: int = 10,
     batch_size: int = 4,
@@ -989,44 +1023,46 @@ def just_eval(
     attn_backend: Optional[str] = None,
 ):
     return main(
-        train_files,
-        wrong_unlearn_files,
-        fixed_wrong_unlearn_files,
-        val_files,
-        dev_set,
-        base_model,
-        lr,
-        name,
-        k_shot,
-        epochs,
-        batch_size,
-        val_batch_size,
-        warmup_steps,
-        retain_files,
-        val_retain_files,
-        retain_dev_file,
-        max_samples,
-        data_seed,
-        eval_every,
-        keep_set,
-        keep_set_weight,
-        train_on_wrong_answer,
-        train_set_size,
-        val_set_size,
-        kind,
-        save_name,
-        version,
-        model,
-        retain_coeff,
-        project_name,
-        unlearn_type,
-        results_file,
-        just_eval,
-        disable_wandb,
+        train_files=train_files,
+        wrong_unlearn_files=wrong_unlearn_files,
+        fixed_wrong_unlearn_files=fixed_wrong_unlearn_files,
+        val_files=val_files,
+        dev_set=dev_set,
+        base_model=base_model,
+        lr=lr,
+        name=name,
+        data_root=data_root,
+        k_shot=k_shot,
+        epochs=epochs,
+        batch_size=batch_size,
+        val_batch_size=val_batch_size,
+        warmup_steps=warmup_steps,
+        retain_files=retain_files,
+        val_retain_files=val_retain_files,
+        retain_dev_file=retain_dev_file,
+        max_samples=max_samples,
+        data_seed=data_seed,
+        eval_every=eval_every,
+        keep_set=keep_set,
+        keep_set_weight=keep_set_weight,
+        train_on_wrong_answer=train_on_wrong_answer,
+        train_set_size=train_set_size,
+        val_set_size=val_set_size,
+        kind=kind,
+        save_name=save_name,
+        version=version,
+        model=model,
+        retain_coeff=retain_coeff,
+        project_name=project_name,
+        unlearn_type=unlearn_type,
+        results_file=results_file,
+        just_eval=just_eval,
+        disable_wandb=disable_wandb,
         hydra_dict=hydra_dict,
-	freeze_layers=freeze_layers,
-	mcq=mcq,
-	data_format=data_format,
-	loss_type=loss_type,
-	attn_backend=attn_backend,
+        freeze_layers=freeze_layers,
+        mcq=mcq,
+        data_format=data_format,
+        loss_type=loss_type,
+        lora_rank=lora_rank,
+        attn_backend=attn_backend,
     )

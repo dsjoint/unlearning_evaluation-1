@@ -6,14 +6,14 @@ defaults:
 just_eval: false
 eval_model_paths: [""]
 only_ft: false
-ft_model_paths: [["meta-llama/Meta-Llama-3-8B", "WMDP"]]
+ft_model_paths: [["TinyLlama/TinyLlama-1.1B-Chat-v1.0", "WMDP"]]
 dont_ft: false
 testing: false
 raise_exceptions: false
 
-num_gpus: 8
+num_gpus: 1
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
-model_id: "meta-llama/Meta-Llama-3-8B"
+model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # model_id: "models/random_bd/lr2e-07-epoch15"
 # model_id: "HuggingFaceH4/zephyr-7b-beta"
 num_layers: ${get_num_layers:${model_id}}
