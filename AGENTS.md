@@ -40,7 +40,7 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 - Always run tests or a minimal validation after every code change.
 - Always choose the most efficient implementation path given available resources (e.g., prefer GPU-accelerated configs over CPU fallbacks when GPUs are available).
 - Minimal validation: `python scripts/check_data.py datasets=[YEARS]`.
-- TODO: Implement a minimal smoketest that completes in a few minutes (faster than running `pipeline.py`).
+- Smoketest (completes in minutes): `python pipeline.py --config-name=lora_smoketest`
 
 ---
 
@@ -48,22 +48,22 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 
 | Path | Description | Evidence |
 |------|-------------|----------|
-| `pipeline.py` | Main entry point; Hydra-based orchestration, Ray distributed execution | (`pipeline.py:1413-1414`) `if __name__ == "__main__": run_pipeline()` |
-| `unlearn_corpus.py` | Core unlearning methods: GD, WHP, FWF | (`unlearn_corpus.py:443-483`) `def main(...)` |
-| `finetune_corpus.py` | Fine-tuning for RTT (Retraining To Threshold) evaluation | (`finetune_corpus.py:271-305`) `@ray.remote def main(...)` |
-| `conf/` | Hydra configuration files (YAML) | (`pipeline.py:1048`) `@hydra.main(config_path="conf", ...)` |
-| `conf/default.yaml` | Default experiment configuration | (`conf/default.yaml:1-263`) |
+| `pipeline.py` | Main entry point; Hydra-based orchestration, Ray distributed execution | (`pipeline.py:1551`) `if __name__ == "__main__": run_pipeline()` |
+| `unlearn_corpus.py` | Core unlearning methods: GD, WHP, FWF, LORA | (`unlearn_corpus.py:455`) `def main(...)` |
+| `finetune_corpus.py` | Fine-tuning for RTT (Retraining To Threshold) evaluation | (`finetune_corpus.py:283`) `@ray.remote def main(...)` |
+| `conf/` | Hydra configuration files (YAML) | (`pipeline.py:1150`) `@hydra.main(config_path="conf", ...)` |
+| `conf/default.yaml` | Default experiment configuration | (`conf/default.yaml:1-310`) |
 | `data/` | Dataset directory containing all JSONL data files | (`README.md:29-31`) |
-| `data/dates-years-trimmed/` | Years dataset (historical events with years) | (`pipeline.py:632-654`) `datasets_dict[Datasets.YEARS]` |
-| `data/mmlu_cats_random_trimmed/` | MMLU category subsets | (`pipeline.py:709-737`) `datasets_dict[Datasets.MMLU]` |
-| `data/wmdp-deduped/` | WMDP benchmark (bio/cyber security) | (`pipeline.py:738-815`) multiple WMDP dataset configs |
-| `data/random_bd/` | Random birthdays dataset | (`pipeline.py:926-948`) `datasets_dict[Datasets.RANDOM_BD]` |
-| `requirements.txt` | Python dependencies with versions | (`requirements.txt:1-82`) |
-| `data/requirements.py` | Dataset requirements + aliasing | (`data/requirements.py:1-220`) |
-| `data/validate_data.py` | Dataset validation helper | (`data/validate_data.py:1-80`) |
-| `scripts/materialize_data.py` | Materialize minimal datasets | (`scripts/materialize_data.py:1-220`) |
-| `scripts/check_data.py` | Validate required artifacts | (`scripts/check_data.py:1-80`) |
-| `DATA.md` | Data materialization & validation guide | (`DATA.md:1-60`) |
+| `data/dates-years-trimmed/` | Years dataset (historical events with years) | (`pipeline.py:733-780`) `datasets_dict[Datasets.YEARS]` |
+| `data/mmlu_cats_random_trimmed/` | MMLU category subsets | (`pipeline.py:810-840`) `datasets_dict[Datasets.MMLU]` |
+| `data/wmdp-deduped/` | WMDP benchmark (bio/cyber security) | (`pipeline.py:840-920`) multiple WMDP dataset configs |
+| `data/random_bd/` | Random birthdays dataset | (`pipeline.py:1020-1050`) `datasets_dict[Datasets.RANDOM_BD]` |
+| `requirements.txt` | Python dependencies with versions | (`requirements.txt:1-85`) |
+| `data/requirements.py` | Dataset requirements + aliasing | (`data/requirements.py:1-286`) |
+| `data/validate_data.py` | Dataset validation helper | (`data/validate_data.py:1-79`) |
+| `scripts/materialize_data.py` | Materialize minimal datasets | (`scripts/materialize_data.py:1-457`) |
+| `scripts/check_data.py` | Validate required artifacts | (`scripts/check_data.py:1-79`) |
+| `DATA.md` | Data materialization & validation guide | |
 | `images/` | Figures for README | (`README.md:5`) |
 
 ---
@@ -73,11 +73,11 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 ### Primary Entry Point
 
 **File:** `pipeline.py`  
-**Function:** `run_pipeline()` (line 1049)  
+**Function:** `run_pipeline()` (line 1151)  
 **Invocation:** `python pipeline.py [hydra_overrides]`
 
 ```python
-# (pipeline.py:1048-1049)
+# (pipeline.py:1150-1151)
 @hydra.main(config_path="conf", config_name=config_file, version_base=None)
 def run_pipeline(cfg: DictConfig) -> None:
 ```
@@ -94,9 +94,9 @@ The pipeline supports three main modes controlled by config flags:
 
 | File | Function | Purpose | Evidence |
 |------|----------|---------|----------|
-| `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF) | (`unlearn_corpus.py:443`) |
-| `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py:911-994`) |
-| `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py:271`) |
+| `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF/LORA) | (`unlearn_corpus.py:455`) |
+| `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py:981`) |
+| `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py:283`) |
 
 ---
 
@@ -104,8 +104,8 @@ The pipeline supports three main modes controlled by config flags:
 
 ### Pipeline Narrative
 
-1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1051-1052`)
-2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1048`)
+1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1160-1161`)
+2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1150`)
 3. **Validation**: Required artifacts are validated before running (see `data/validate_data.py`)
 4. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
    - **Unlearning Phase**: Call `unlearn()` remote function → saves model to `models/`
@@ -113,7 +113,7 @@ The pipeline supports three main modes controlled by config flags:
 5. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
    - Call `finetune_corpus.main()` remote function
    - Write fine-tuning metrics to `evals/pipeline/ft/*.csv`
-6. **Cleanup**: Ray shutdown (`pipeline.py:1406`)
+6. **Cleanup**: Ray shutdown (`pipeline.py:1544`)
 
 ### Pipeline Stages with Code Locations
 
@@ -123,7 +123,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Config Load (Hydra + OmegaConf)                             │
-│ (pipeline.py:1048-1130)                                      │
+│ (pipeline.py:1150-1230)                                      │
 │ - Resolves ${get_log_range:...}, ${get_num_layers:...}      │
 │ - Logs config to wandb                                       │
 └─────────────────────────────────────────────────────────────┘
@@ -138,30 +138,30 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Ray Initialization                                           │
-│ (pipeline.py:1051-1052) ray.init(num_gpus=...)              │
+│ (pipeline.py:1160-1161) ray.init(num_gpus=...)              │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Unlearning Phase (per config combination)                   │
-│ (pipeline.py:1133-1248)                                      │
+│ (pipeline.py:1233-1350)                                      │
 │                                                              │
 │ ┌──────────────────────────────────────────────────────────┐│
 │ │ unlearn() @ray.remote                                    ││
-│ │ (pipeline.py:136-257)                                    ││
+│ │ (pipeline.py:176-347)                                    ││
 │ │                                                          ││
 │ │ Routes to:                                               ││
 │ │ - GD/WHP/FWF → unlearn_corpus.main()                    ││
-│ │   (unlearn_corpus.py:443-824)                           ││
+│ │   (unlearn_corpus.py:455-900)                           ││
 │ │ - CUT/RMU → rmu.unlearn_pipeline.main()                 ││
-│ │   (pipeline.py:215-245) [EXTERNAL MODULE]               ││
+│ │   (pipeline.py:304-345) [EXTERNAL MODULE]               ││
 │ └──────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Data Loading                                                 │
-│ (unlearn_corpus.py:517-540)                                  │
+│ (unlearn_corpus.py:558-603)                                  │
 │ - load_jsonl() for train/val/retain datasets                │
 │ - make_k_shot() for few-shot prompts                        │
 └─────────────────────────────────────────────────────────────┘
@@ -169,7 +169,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Model Loading                                                │
-│ (unlearn_corpus.py:507-509)                                  │
+│ (unlearn_corpus.py:523-528)                                  │
 │ - AutoModelForCausalLM.from_pretrained(base_model, ...)     │
 │ - Flash Attention 2, bfloat16                               │
 └─────────────────────────────────────────────────────────────┘
@@ -177,7 +177,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Training Loop                                                │
-│ (unlearn_corpus.py:729-783)                                  │
+│ (unlearn_corpus.py:790-830)                                  │
 │ - Lion optimizer                                             │
 │ - get_loss() for forget/retain loss computation             │
 │ - Warmup scheduling                                          │
@@ -186,7 +186,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Evaluation                                                   │
-│ (unlearn_corpus.py:566-724)                                  │
+│ (unlearn_corpus.py:612-780)                                  │
 │ - MCQ accuracy on forget/retain sets                        │
 │ - Calibrated accuracy                                        │
 │ - 5-shot evaluation (optional)                              │
@@ -195,7 +195,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Model Saving                                                 │
-│ (unlearn_corpus.py:787-789)                                  │
+│ (unlearn_corpus.py:850-851)                                  │
 │ model.save_pretrained(save_name)                            │
 │ tokenizer.save_pretrained(save_name)                        │
 └─────────────────────────────────────────────────────────────┘
@@ -203,17 +203,17 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Metrics Serialization                                        │
-│ (pipeline.py:400-455)                                        │
+│ (pipeline.py:132-140, 553)                                   │
 │ write_metrics_to_csv() → evals/pipeline/unlearning/*.csv    │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ RTT Phase (Fine-tuning)                                      │
-│ (pipeline.py:463-600)                                        │
+│ (pipeline.py:560-700)                                        │
 │                                                              │
 │ finetune_corpus.main() @ray.remote                          │
-│ (finetune_corpus.py:271-503)                                 │
+│ (finetune_corpus.py:283-523)                                 │
 │ - Fine-tune unlearned model on forget set                   │
 │ - Measure accuracy recovery                                  │
 └─────────────────────────────────────────────────────────────┘
@@ -221,7 +221,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Final Metrics                                                │
-│ (pipeline.py:589-600)                                        │
+│ (pipeline.py:700-710)                                        │
 │ write_metrics_to_csv() → evals/pipeline/ft/*.csv            │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -235,15 +235,15 @@ User Invocation (CLI)
 | Artifact | Produced By | Consumed By | Format | Default Path/Pattern | Config Key(s) | Evidence |
 |----------|-------------|-------------|--------|---------------------|---------------|----------|
 | Hydra Config | User/defaults | `run_pipeline()` | YAML | `conf/*.yaml` | `--config-name` | (`pipeline.py:1048`) |
-| Training Data (MCQ) | External/scripts | `load_jsonl()` | JSONL | `data/{dataset}/split_*.jsonl` | `datasets_dict[*]["val_files"]` | (`pipeline.py:632-1031`) |
-| Training Data (Corpus) | GPT-4o scripts | `load_jsonl()` | JSONL | `data/{dataset}/corpus_split_*.jsonl` | `datasets_dict[*]["unlearn_files"]` | (`pipeline.py:632-1031`) |
-| Wrong Hypothesis Data | GPT-4o scripts | `load_jsonl()` | JSONL | `data/{dataset}/whp_corpus_split_*.jsonl` | `datasets_dict[*]["wrong_unlearn_files"]` | (`pipeline.py:661`) |
-| Dev Set | External | `make_k_shot()` | JSONL | `data/{dataset}/dev.jsonl` | `datasets_dict[*]["dev_file"]` | (`pipeline.py:653`) |
+| Training Data (MCQ) | External/scripts | `load_jsonl()` | JSONL | `data/{dataset}/split_*.jsonl` | `datasets_dict[*]["val_files"]` | (`pipeline.py:733-1130`) |
+| Training Data (Corpus) | GPT-4o scripts | `load_jsonl()` | JSONL | `data/{dataset}/corpus_split_*.jsonl` | `datasets_dict[*]["unlearn_files"]` | (`pipeline.py:733-1130`) |
+| Wrong Hypothesis Data | GPT-4o scripts | `load_jsonl()` | JSONL | `data/{dataset}/whp_corpus_split_*.jsonl` | `datasets_dict[*]["wrong_unlearn_files"]` | (`pipeline.py:733-1130`) |
+| Dev Set | External | `make_k_shot()` | JSONL | `data/{dataset}/dev.jsonl` | `datasets_dict[*]["dev_file"]` | (`pipeline.py:733-1130`) |
 | Base Model | HuggingFace Hub | `AutoModelForCausalLM` | HF format | N/A | `model_id` | (`conf/default.yaml:18`) |
 | Unlearned Model | `unlearn_corpus.main()` | RTT / evaluation | HF format | `models/{method}/{dataset}/{project}/{model_id}-rc{rc}-lr{lr}-epochs{epochs}` | `save_name`, `unlearn.save_unlearn_model` | (`pipeline.py:1173-1179`) |
 | Fine-tuned Model | `finetune_corpus.main()` | Evaluation | HF format | `models/fted/{...}/lr{lr}-epoch{epochs}` | `ft.save_models` | (`pipeline.py:470-475`) |
-| Unlearning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/unlearning/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:443-455`) |
-| Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:589-600`) |
+| Unlearning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/unlearning/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:553, 702`) |
+| Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:700`) |
 | Data Manifest | `scripts/materialize_data.py` | Analysis | JSON | `data/MANIFEST.json` | `data_root` | (`scripts/materialize_data.py:190-210`) |
 | WandB Logs | `wandb.log()` | Monitoring | WandB | N/A | `wandb_project_name` | (`unlearn_corpus.py:699-712`) |
 | Error Logs | Exception handler | Debugging | Text | `pipeline_error.log` | N/A | (`pipeline.py:610-617`) |
@@ -336,7 +336,7 @@ User Invocation (CLI)
     "max_samples": int
 }
 ```
-**Evidence:** (`pipeline.py:400-441`)
+**Evidence:** (`pipeline.py:475-540`)
 
 ---
 
@@ -392,15 +392,15 @@ results_dir: "evals/pipeline"
 wandb_project_name: "experiment_name"
 data_root: "data"
 ```
-**Evidence:** (`conf/default.yaml:1-263`)
+**Evidence:** (`conf/default.yaml:1-310`)
 
 ### Custom OmegaConf Resolvers
 
 | Resolver | Function | Example | Evidence |
 |----------|----------|---------|----------|
-| `get_log_range` | Generate logarithmic range | `${get_log_range:1e-3, 1e3, 10}` → `[0.001, 0.01, 0.1, 1, 10, 100]` | (`pipeline.py:101-110`) |
-| `get_num_layers` | Get model layer count | `${get_num_layers:${model_id}}` | (`pipeline.py:112-117`) |
-| `resolve_freeze_layers` | Convert fractions to layer indices | `${resolve_freeze_layers:[[0, "0.5"]], ${model_id}}` | (`pipeline.py:121-132`) |
+| `get_log_range` | Generate logarithmic range | `${get_log_range:1e-3, 1e3, 10}` → `[0.001, 0.01, 0.1, 1, 10, 100]` | (`pipeline.py:141-150`) |
+| `get_num_layers` | Get model layer count | `${get_num_layers:${model_id}}` | (`pipeline.py:152-157`) |
+| `resolve_freeze_layers` | Convert fractions to layer indices | `${resolve_freeze_layers:[[0, "0.5"]], ${model_id}}` | (`pipeline.py:161-172`) |
 
 ### Available Config Presets
 
@@ -409,7 +409,9 @@ data_root: "data"
 | `default.yaml` | Standard unlearn+RTT | `just_eval=false, only_ft=false` | (`conf/default.yaml`) |
 | `just_eval.yaml` | Evaluation only | `just_eval=true` | (`conf/just_eval.yaml:6`) |
 | `only_ft.yaml` | Fine-tune existing model | `only_ft=true` | (`conf/only_ft.yaml:8`) |
-| `many_cut_sc.yaml` | Grid search over CUT steering coefficients | `unlearn.cut_scs: [0.1, 1, 10]` | (`conf/default.yaml:32-33`) |
+| `lora_smoketest.yaml` | Quick LoRA smoketest (minutes) | `testing=true, 1 epoch, 32 samples` | (`conf/lora_smoketest.yaml`) |
+| `lora_rank_sweep.yaml` | LoRA rank sweep experiment | `lora_ranks: [1,2,4,8,16,32]` | (`conf/lora_rank_sweep.yaml`) |
+| `many_cut_sc.yaml` | Grid search over CUT steering coefficients | `unlearn.cut_scs: [0.1, 1, 10]` | (`conf/many_cut_sc.yaml`) |
 | `random_bd.yaml` | Random birthdays experiments | `datasets: [RANDOM_BD_SAME_RETAIN]` | (`conf/random_bd.yaml`) |
 
 ---
@@ -473,7 +475,7 @@ python pipeline.py \
     unlearn.types=[CUT] \
     unlearn.cut_scs=[0.1,1,10]
 ```
-**Evidence:** (`pipeline.py:26-31`) for method enums
+**Evidence:** (`pipeline.py:28-34`) for method enums
 
 ### (d) Run Only Fine-tuning (RTT)
 
@@ -495,7 +497,7 @@ python pipeline.py \
     unlearn.types=[GD,WHP] \
     dont_ft=true
 ```
-**Evidence:** (`pipeline.py:295`) `dont_ft: bool = False`
+**Evidence:** (`pipeline.py:385`) `dont_ft: bool = False`
 
 ### (f) Multi-GPU Distributed Training
 
@@ -505,7 +507,7 @@ The pipeline automatically uses Ray for distributed training:
 # Automatically uses up to 8 GPUs
 python pipeline.py num_gpus=4  # Limit to 4 GPUs
 ```
-**Evidence:** (`pipeline.py:1051`) `num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()`
+**Evidence:** (`pipeline.py:1160`) `num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()`
 
 ---
 
@@ -552,13 +554,13 @@ data/
 │   └── corpus_mmlu_{category}.jsonl
 └── ...
 ```
-**Evidence:** (`pipeline.py:632-1031`) `datasets_dict`
+**Evidence:** (`pipeline.py:733-1130`) `datasets_dict`
 
 ### External Dependencies
 
 - **RMU Module**: The CUT/RMU unlearning method requires an external `rmu` package not included in this repository:
   ```python
-  # (pipeline.py:215)
+  # (pipeline.py:304)
   import rmu.unlearn_pipeline as rmu
   ```
   **TODO:** Locate or install the `rmu` package separately.
@@ -571,9 +573,9 @@ data/
 
 ### Seed Control
 
-- Data shuffling seed: `data_seed` config key (`conf/default.yaml:26`)
+- Data shuffling seed: `data_seed` config key (`conf/default.yaml:34`)
 - Model seeds are not explicitly set (PyTorch defaults)
-- **Evidence:** (`unlearn_corpus.py:525`) `random.Random(data_seed).shuffle(train_dataset)`
+- **Evidence:** (`unlearn_corpus.py:572`) `random.Random(data_seed).shuffle(train_dataset)`
 
 ### Expected Runtime Directory Layout
 
@@ -630,28 +632,28 @@ After running experiments, expect this structure:
 
 | Method | Enum Value | Description | Implementation | Evidence |
 |--------|------------|-------------|----------------|----------|
+| **CUT** | `UnlearnType.CUT` | CUT/RMU (Li et al. 2024) - representation engineering | `rmu.unlearn_pipeline` | (`pipeline.py:29`) |
 | **GD** | `UnlearnType.GD` | Gradient Difference - maximize loss on forget set | `unlearn_corpus.py` | (`pipeline.py:30`) |
 | **WHP** | `UnlearnType.WHP` | Wrong Hypothesis Penalty (RIA) - train on wrong answers | `unlearn_corpus.py` | (`pipeline.py:31`) |
 | **FWF** | `UnlearnType.FWF` | Fixed Wrong Fact - train on fixed incorrect facts | `unlearn_corpus.py` | (`pipeline.py:32`) |
 | **LORA** | `UnlearnType.LORA` | LoRA-based unlearning - train only adapter weights | `unlearn_corpus.py` | (`pipeline.py:33`) |
-| **CUT** | `UnlearnType.CUT` | CUT/RMU (Li et al. 2024) - representation engineering | `rmu.unlearn_pipeline` | (`pipeline.py:29`) |
 
 ### Loss Types (LossType Enum)
 
 | Loss Type | Description | Evidence |
 |-----------|-------------|----------|
-| `CORPUS` | Loss on all tokens | (`pipeline.py:35`) |
-| `LETTER` | Loss only on answer letter token | (`pipeline.py:34`) |
-| `LETTER_ANSWER` | Loss on letter and answer text | (`pipeline.py:36`) |
-| `QUESTION_LETTER_ANSWER` | Loss on question, letter, and answer | (`pipeline.py:37`) |
-| `NUMBER` | Loss only on number tokens | (`pipeline.py:39`) |
+| `LETTER` | Loss only on answer letter token | (`pipeline.py:37`) |
+| `CORPUS` | Loss on all tokens | (`pipeline.py:38`) |
+| `LETTER_ANSWER` | Loss on letter and answer text | (`pipeline.py:39`) |
+| `QUESTION_LETTER_ANSWER` | Loss on question, letter, and answer | (`pipeline.py:40`) |
+| `NUMBER` | Loss only on number tokens | (`pipeline.py:42`) |
 
 ### Data Formats (DataFormat Enum)
 
 | Format | Description | Evidence |
 |--------|-------------|----------|
-| `CORPUS` | Plain text | (`pipeline.py:65`) |
-| `MCQ` | Multiple choice questions | (`pipeline.py:66`) |
-| `TF` | True/False format | (`pipeline.py:67`) |
+| `CORPUS` | Plain text | (`pipeline.py:68`) |
+| `MCQ` | Multiple choice questions | (`pipeline.py:69`) |
+| `TF` | True/False format | (`pipeline.py:70`) |
 
 ---
