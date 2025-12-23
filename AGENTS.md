@@ -360,15 +360,16 @@ dont_ft: false            # Skip RTT after unlearning
 model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 num_layers: ${get_num_layers:${model_id}}  # Dynamic resolver
 
-# Datasets (enum names from pipeline.py:42-62)
-datasets: [MMLU]          # Can be list: [YEARS, MMLU, WMDP_MCQ_CORPUS]
+# Datasets (enum names from pipeline.py)
+datasets: [YEARS]         # Can be list: [YEARS, MMLU, WMDP_MCQ_CORPUS]
 
 # Unlearning config
 unlearn:
-  types: [GD]             # [GD, WHP, FWF, CUT]
+  types: [LORA]           # [GD, WHP, FWF, CUT, LORA]
+  lora_ranks: [1, 2, 4, 8, 16, 32]  # For LORA method
   save_unlearn_model: true
   types_config:
-    GD:
+    LORA:
       loss_type: CORPUS   # CORPUS, LETTER, LETTER_ANSWER, etc.
       datasets_config:
         YEARS:
@@ -612,15 +613,14 @@ After running experiments, expect this structure:
 
 | Item | Files to Inspect | Reason |
 |------|-----------------|--------|
-| RMU/CUT Implementation | External `rmu` package | (`pipeline.py:215`) imports `rmu.unlearn_pipeline` but module not in repo |
+| RMU/CUT Implementation | External `rmu` package | imports `rmu.unlearn_pipeline` but module not in repo |
 | WMDP Original Data Source | `data/wmdp-deduped/dedup-bio.py`, `dedup-cyber.py` | Need to trace original WMDP data before deduplication |
-| Fineweb Retain Data | Not in repo | (`pipeline.py:647`) references `fineweb_edu_seed-42/split_{i}` which is not in `data/` |
-| Wikitext Retain Data | Not in repo | (`pipeline.py:748`) references `wikitext/wikitext_dataset` which is not in `data/` |
-| BeaverTails Dataset | Not in repo | (`pipeline.py:908-924`) `Datasets.BEAVERTAILS` references missing data |
-| Day of Month Dataset | Not in repo | (`pipeline.py:1018-1031`) `Datasets.DAY_OF_THE_MONTH` references missing data |
+| Fineweb Retain Data | Auto-materialized | `scripts/materialize_data.py` creates `fineweb_edu_seed-42/split_{i}` |
+| Wikitext Retain Data | Auto-materialized | `scripts/materialize_data.py` creates `wikitext/wikitext_dataset` |
+| BeaverTails Dataset | Auto-materialized | `scripts/materialize_data.py` creates beavertails category splits |
+| Day of Month Dataset | Not in repo | `Datasets.DAY_OF_THE_MONTH` references missing data |
 | Plotting/Aggregation Scripts | None found | No scripts for aggregating results or generating figures |
 | Test Suite | None found | No unit tests or integration tests discovered |
-| ndates Data | Not in repo | (`pipeline.py:644`) references `ndates/split_{i}` which is not in `data/` |
 
 ---
 
@@ -630,10 +630,11 @@ After running experiments, expect this structure:
 
 | Method | Enum Value | Description | Implementation | Evidence |
 |--------|------------|-------------|----------------|----------|
-| **GD** | `UnlearnType.GD` | Gradient Difference - maximize loss on forget set | `unlearn_corpus.py` | (`pipeline.py:28`) |
-| **WHP** | `UnlearnType.WHP` | Wrong Hypothesis Penalty (RIA) - train on wrong answers | `unlearn_corpus.py` | (`pipeline.py:29`) |
-| **FWF** | `UnlearnType.FWF` | Fixed Wrong Fact - train on fixed incorrect facts | `unlearn_corpus.py` | (`pipeline.py:30`) |
-| **CUT** | `UnlearnType.CUT` | CUT/RMU (Li et al. 2024) - representation engineering | `rmu.unlearn_pipeline` | (`pipeline.py:27`) |
+| **GD** | `UnlearnType.GD` | Gradient Difference - maximize loss on forget set | `unlearn_corpus.py` | (`pipeline.py:30`) |
+| **WHP** | `UnlearnType.WHP` | Wrong Hypothesis Penalty (RIA) - train on wrong answers | `unlearn_corpus.py` | (`pipeline.py:31`) |
+| **FWF** | `UnlearnType.FWF` | Fixed Wrong Fact - train on fixed incorrect facts | `unlearn_corpus.py` | (`pipeline.py:32`) |
+| **LORA** | `UnlearnType.LORA` | LoRA-based unlearning - train only adapter weights | `unlearn_corpus.py` | (`pipeline.py:33`) |
+| **CUT** | `UnlearnType.CUT` | CUT/RMU (Li et al. 2024) - representation engineering | `rmu.unlearn_pipeline` | (`pipeline.py:29`) |
 
 ### Loss Types (LossType Enum)
 
