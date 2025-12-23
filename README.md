@@ -74,6 +74,11 @@ python pipeline.py attn_backend=eager
    python pipeline.py
    ```
 
+**Note:** The pipeline includes a baseline pre-flight check that validates the model knows the information before unlearning. Set `baseline_min_forget_acc=0` to disable this check. Results are written to:
+- `evals/pipeline/unlearning/*.csv` - Unlearning metrics
+- `evals/pipeline/ft/*.csv` - Fine-tuning (RTT) metrics  
+- `evals/pipeline/summary/*.csv` - Summary CSV with A/B/C stats (baseline/unlearn/unlearn+RTT/baseline+RTT)
+
 ## Data
 
 - Datasets should be placed in the `data/` directory by default.
@@ -87,13 +92,13 @@ python pipeline.py attn_backend=eager
 ### Manifest
 - `scripts/materialize_data.py` writes `data/MANIFEST.json` describing materialized artifacts.
 
-### Dateset Directories
+### Dataset Directories
 1. Years: `data/dates-years-trimmed`
 2. MMLU: `data/mmlu_cats_random_trimmed`
 3. WMDP-Deduped: `data/wmdp-deduped`
 4. Random Birthdays: `data/random_bd`
 
-### Dateset Files Naming Interpretation
+### Dataset Files Naming Interpretation
 1. The original MCQ questions are called `split_*.jsonl`.
 2. The GPT-4o generated text splits have the prefix `corpus_`.
 3. The text with incorrect facts (used for RIA) are prefixed with `whp_`.

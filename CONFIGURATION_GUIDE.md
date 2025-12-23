@@ -42,6 +42,9 @@ When switching to a different base model (e.g., from `meta-llama/Meta-Llama-3-8B
 # Primary model identifier (HuggingFace model ID or local path)
 model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
+# Baseline validation threshold (set to 0 to disable)
+baseline_min_forget_acc: 0.3  # Minimum baseline accuracy to proceed with unlearning
+
 # Models for fine-tuning phase: [[model_path, dataset_name], ...]
 ft_model_paths: [["TinyLlama/TinyLlama-1.1B-Chat-v1.0", "MMLU"]]
 
@@ -98,11 +101,11 @@ When changing models, also consider:
 
 | File | Location | Code | Notes |
 |------|----------|------|-------|
-| `pipeline.py` | Line 137 | `@ray.remote(num_gpus=1)` | Ray remote decorator for unlearn task |
-| `pipeline.py` | Line 1106-1107 | `num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()` | Ray initialization |
-| `unlearn_corpus.py` | Line 860 | `@ray.remote(num_gpus=1)` | Remote unlearn function |
-| `unlearn_corpus.py` | Line 946 | `@ray.remote(num_gpus=1)` | Just eval function |
-| `finetune_corpus.py` | Line 272 | `@ray.remote(num_gpus=1)` | Fine-tuning remote function |
+| `pipeline.py` | Line 671 | `@ray.remote(num_gpus=1)` | Ray remote decorator for unlearn task |
+| `pipeline.py` | Line 1538-1539 | `num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()` | Ray initialization |
+| `pipeline.py` | Line 568 | `@ray.remote(num_gpus=1)` | Baseline evaluation remote function |
+| `unlearn_corpus.py` | (varies) | `@ray.remote(num_gpus=1)` | Remote unlearn function (if used directly) |
+| `finetune_corpus.py` | (varies) | `@ray.remote(num_gpus=1)` | Fine-tuning remote function (if used directly) |
 
 ### Memory & Batch Size Configuration
 
@@ -143,8 +146,8 @@ These are **hardcoded** in Python files and may need manual modification for dif
 
 | File | Line | Setting | Notes |
 |------|------|---------|-------|
-| `unlearn_corpus.py` | ~513 | `torch.bfloat16` | Model loading precision |
-| `finetune_corpus.py` | ~321 | `torch.float16` | Model loading precision |
+| `unlearn_corpus.py` | 615 | `torch.bfloat16` | Model loading precision |
+| `finetune_corpus.py` | 332 | `torch.float16` | Model loading precision |
 
 ---
 
@@ -195,6 +198,11 @@ python scripts/check_data.py datasets=[YEARS]
 | `attn_backend` | `conf/*.yaml` | `auto` | Attention implementation |
 | `data_seed` | `conf/*.yaml` | 4 | Random seed for data |
 | `data_root` | `conf/*.yaml` | `data` | Data root override |
+| `baseline_min_forget_acc` | `conf/*.yaml` | 0.3 | Minimum baseline accuracy threshold (0 to disable) |
+| `acc_selection_rule` | `conf/*.yaml` | `final_epoch` | Accuracy selection for summary CSV (`final_epoch` or `max_epoch`) |
+| `ft.eval_split_ids` | `conf/*.yaml` | `null` | Explicit list of eval split IDs (e.g., `[0, 3]`). If `null`, splits are sampled deterministically |
+| `ft.eval_seed` | `conf/*.yaml` | 0 | Seed for sampling eval splits when `eval_split_ids` is `null` |
+| `ft.num_splits` | `conf/*.yaml` | 2 | Number of evaluation splits to average over (not total splits) |
 
 ---
 
@@ -248,6 +256,22 @@ unlearn:
 
 ---
 
+## RTT Evaluation Split Configuration
+
+The pipeline supports flexible evaluation split selection for RTT (Retraining To Threshold):
+
+- **`ft.num_splits`**: Number of evaluation splits to average over (default: 2). This is NOT the total number of splits.
+- **`ft.eval_split_ids`**: Explicit list of split indices to use (e.g., `[0, 3]`). If `null`, splits are sampled deterministically.
+- **`ft.eval_seed`**: Seed for deterministic split sampling when `eval_split_ids` is `null` (default: 0, falls back to `data_seed`).
+
+The same evaluation splits are used consistently across:
+- Baseline pre-flight evaluation
+- Unlearning evaluation (A)
+- Unlearn+RTT evaluation (B)
+- Baseline+RTT evaluation (C)
+
+This ensures fair comparison in the summary CSV.
+
 ## CLI Override Examples
 
 ```bash
@@ -260,12 +284,17 @@ python pipeline.py num_gpus=4
 # Change batch size
 python pipeline.py batch_size=2 val_batch_size=4
 
+# Override evaluation splits
+python pipeline.py ft.eval_split_ids=[0,2,4]  # Use specific splits
+python pipeline.py ft.num_splits=3 ft.eval_seed=42  # Sample 3 splits with seed
+
 # Multiple overrides
 python pipeline.py \
     model_id="TinyLlama/TinyLlama-1.1B-Chat-v1.0" \
     num_gpus=1 \
     batch_size=4 \
-    attn_backend=sdpa
+    attn_backend=sdpa \
+    baseline_min_forget_acc=0.5
 ```
 
 ---
@@ -275,6 +304,7 @@ python pipeline.py \
 - [ ] Update `model_id` in `conf/default.yaml`
 - [ ] Update `ft_model_paths` in all relevant config files
 - [ ] Update `eval_model_paths` if using evaluation-only mode
+- [ ] Consider adjusting `baseline_min_forget_acc` threshold (or set to 0 to disable)
 - [ ] Consider adjusting `batch_size` for model size
 - [ ] Consider adjusting learning rates in `types_config` sections
 - [ ] Test with `--config-name=lora_smoketest` first
