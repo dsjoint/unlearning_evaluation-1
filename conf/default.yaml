@@ -6,7 +6,7 @@ defaults:
 just_eval: false
 eval_model_paths: [""]
 only_ft: false
-ft_model_paths: [["TinyLlama/TinyLlama-1.1B-Chat-v1.0", "WMDP"]]
+ft_model_paths: [["Qwen/Qwen2.5-3B-Instruct", "YEARS"]]
 dont_ft: false
 testing: false
 raise_exceptions: false
@@ -22,23 +22,39 @@ num_gpus: 1
 # model_id: "models/fted/Meta-Llama-3-8B/LossType.LETTER_ANSWER/all_splits/lr1e-06-epoch6"
 #model_id: "meta-llama/Meta-Llama-3-8B"
 # model_id: "models/random_bd/lr2e-07-epoch15"
-model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+model_id: "Qwen/Qwen2.5-3B-Instruct"
 num_layers: ${get_num_layers:${model_id}}
 datasets: [YEARS]
-wandb_project_name: "lora_years_tinyllama_1_1b"
+wandb_project_name: "lora_years_qwen_3b"
 results_dir: "evals/pipeline"
 data_root: "data"
-batch_size: 4
-val_batch_size: 8
+batch_size: 12
+val_batch_size: 24
 warmup_steps: 24
 data_seed: 4
-eval_every: 1
+eval_every: 2
+
+# Accuracy selection rule for A/B/C summary stats
+# - final_epoch: Use accuracy at the last epoch
+# - max_epoch: Use maximum accuracy across all epochs
+acc_selection_rule: final_epoch
+
+# Baseline model validation - skip experiments if base model doesn't know the info
+# Set to 0 to disable the check
+baseline_min_forget_acc: 0.3
 
 unlearn:
   types: [LORA]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
-  lora_ranks: [1, 2, 4, 8, 16, 32]
+  lora_ranks: [16, 32]
+  use_4bit: false  # Disabled for faster training (LoRA instead of QLoRA)
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bf16
+  bnb_4bit_double_quant: true
+  max_seq_len: 512
+  grad_accum_steps: 4
+  gradient_checkpointing: true
   save_unlearn_model: true
   # A list of lists; resolves to coefficient * num_layers. ex: [[0, "0.5"]]
   freeze_layers_coeffs: null
@@ -48,40 +64,40 @@ unlearn:
       loss_type: CORPUS
       datasets_config:
         YEARS:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e2, 2e4, 10}
             add: [0, 1200] # Additional hand-picked retain_coeffs
         YEARS_MMLU_RETAIN:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e2, 2e4, 10}
             add: [0, 1200] # Additional hand-picked retain_coeffs
         MMLU:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e2, 2e4, 10}
             add: [0, 1200] 
             # add: [1, 2, 4, 8] 
         WMDP_CORPUS:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             # range: ${get_log_range:1e-2, 2e4, 10}
             range: ${get_log_range:1e-2, 1e5, 10}
             add: [0] 
         WMDP_CORPUS_FINEWEB:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             # range: ${get_log_range:1e-2, 2e4, 10}
             range: ${get_log_range:1e-2, 1e5, 10}
             add: [] 
         WMDP_MCQ_CORPUS:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             # range: ${get_log_range:1e-2, 2e4, 10}
@@ -101,7 +117,7 @@ unlearn:
             range: ${get_log_range:1e2, 1e4, 2}
             add: [] 
         RANDOM_BD:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-2, 2e4, 10}
@@ -257,50 +273,53 @@ unlearn:
       loss_type: CORPUS
       datasets_config:
         YEARS:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
-            range: ${get_log_range:1e-3, 1e3, 10}
-            add: [0, 2, 4]
+            #range: ${get_log_range:1e-3, 1e3, 10}
+            range: ${get_log_range:1e-2, 1e2, 10}
+            add: []
         YEARS_MMLU_RETAIN:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
         MMLU:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
         WMDP_MCQ_CORPUS:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
         WMDP_MCQ_CORPUS_FINEWEB:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
         RANDOM_BD:
-          epochs_lst: [5]
+          epochs_lst: [3]
           lrs: [4e-7]
           rcs:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
 
 ft:
-  num_splits: 2
+  num_splits: 1
+  eval_split_ids: null
+  eval_seed: 0
   loss_types: [QUESTION_LETTER_ANSWER]
   # A list of lists; resolves to coefficient * num_layers. ex: [[0, "0.5"]]
   freeze_layers_coeffs: null
   freeze_layers: ${resolve_freeze_layers:${ft.freeze_layers_coeffs}, ${model_id}}
-  epochs_lst: [6]
-  lrs: ${get_log_range:1e-7,5e-6,2}
+  epochs_lst: [1]
+  lrs: [1e-6]
   save_models: false
 
 

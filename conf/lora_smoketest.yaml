@@ -4,12 +4,12 @@ defaults:
 
 # Minimal smoketest config (runs in minutes)
 just_eval: false
-dont_ft: true
+dont_ft: false
 testing: true
 
-model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-datasets: [MMLU]
-wandb_project_name: "lora_smoketest"
+model_id: "Qwen/Qwen2.5-3B-Instruct"
+datasets: [YEARS]
+wandb_project_name: "lora_smoketest_qwen_years"
 
 unlearn:
   types: [LORA]
@@ -20,7 +20,7 @@ unlearn:
     LORA:
       loss_type: CORPUS
       datasets_config:
-        MMLU:
+        YEARS:
           epochs_lst: [1]
           lrs: [4e-7]
           rcs:

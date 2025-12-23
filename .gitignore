@@ -10,9 +10,8 @@ outputs/
 
 # Runtime artifacts
 *.log
-*.out
+logs/
 pipeline_error.log
-pipeline.out
 
 # Generated data (large files)
 models/

@@ -1,4 +1,6 @@
 import os
+import site
+from pathlib import Path
 import unittest
 import json
 import math
@@ -7,7 +9,7 @@ from typing import Optional, TypedDict
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import AdamW, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from ray.experimental.tqdm_ray import tqdm
 import wandb
 import ray
@@ -16,7 +18,7 @@ from filelock import FileLock
 from enum import Enum, auto
 import logging
 from pipeline import UnlearnType, LossType, DataFormat
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
 from utils.attention_backend import get_attn_implementation
 
 MAX_SEQ_LEN = 512
@@ -31,6 +33,53 @@ class Point(TypedDict):
 
 
 test_prompts = ["Hi, my name is", "Once upon a time,", "The capital of France"]
+
+
+def resolve_dtype(name: str) -> torch.dtype:
+    name = str(name).lower()
+    if name in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if name in ("fp16", "float16"):
+        return torch.float16
+    if name in ("fp32", "float32"):
+        return torch.float32
+    raise ValueError(f"Unsupported dtype: {name}")
+
+
+def maybe_set_bnb_cuda_version() -> None:
+    if os.environ.get("BNB_CUDA_VERSION"):
+        return
+    cuda_version = torch.version.cuda
+    if not cuda_version:
+        return
+    parts = cuda_version.split(".")
+    if len(parts) < 2:
+        return
+    target = f"{parts[0]}{parts[1]}"
+    bb_dir = None
+    for sp in site.getsitepackages():
+        candidate = Path(sp) / "bitsandbytes"
+        if candidate.exists():
+            bb_dir = candidate
+            break
+    if not bb_dir:
+        return
+    target_lib = bb_dir / f"libbitsandbytes_cuda{target}.so"
+    if target_lib.exists():
+        return
+    versions = []
+    for lib in bb_dir.glob("libbitsandbytes_cuda*.so"):
+        name = lib.name.replace("libbitsandbytes_cuda", "").replace(".so", "")
+        if name.isdigit():
+            versions.append(name)
+    if not versions:
+        return
+    best = sorted(versions)[-1]
+    os.environ["BNB_CUDA_VERSION"] = best
+    print(
+        f"BNB_CUDA_VERSION not set; falling back to {best} to match "
+        f"available bitsandbytes CUDA binaries."
+    )
 
 
 def sample_tokens(
@@ -94,6 +143,7 @@ def process_batch(
     tokenizer: AutoTokenizer,
     label_possibilities: list[int],
     train_on_wrong_answer: bool = False,
+    max_seq_len: int = MAX_SEQ_LEN,
     print_a_prompt: bool = False,
     print_prefix: str = "prompts"
 ):
@@ -101,7 +151,7 @@ def process_batch(
     if print_a_prompt:
         print(f"{print_prefix}: {prompts}")
     tokens = tokenizer(
-        prompts, return_tensors="pt", max_length=MAX_SEQ_LEN,
+        prompts, return_tensors="pt", max_length=max_seq_len,
         truncation=True, padding=True
     ).to(device)
 
@@ -130,7 +180,8 @@ def get_loss_and_acc(
     acc = (logits.argmax(dim=-1) == last_pos_label_ids).float().sum().item()
     if unlearn_type.value == UnlearnType.GD.value:
         loss = -loss
-    return loss, acc, logits[:, label_possibilities].detach().cpu().numpy()
+    logits_labels = logits[:, label_possibilities].detach().float().cpu().numpy()
+    return loss, acc, logits_labels
 
 doc_to_choice = ["A", "B", "C", "D"]
 
@@ -195,6 +246,7 @@ def get_loss_corpus(
     label_possibilities: list[int],
     train_on_wrong_answer: bool = False,
     max_len: int = 2000,
+    max_seq_len: int = MAX_SEQ_LEN,
     unlearn_type: UnlearnType = UnlearnType.NOT_SPECIFIED,
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     print_prompts: bool = False,
@@ -210,7 +262,7 @@ def get_loss_corpus(
         print(f"{prompts_prefix}: {prompts}")
 
     tokens = tokenizer(
-        prompts, return_tensors="pt", max_length=MAX_SEQ_LEN,
+        prompts, return_tensors="pt", max_length=max_seq_len,
         truncation=True, padding=True
     ).to(device)
     logits = model(**model.prepare_inputs_for_generation(**tokens)).logits
@@ -248,6 +300,7 @@ def get_loss_letter_answer(
     batch,
     device,
     tokenizer,
+    max_seq_len: int = MAX_SEQ_LEN,
     unlearn_type: UnlearnType = UnlearnType.NOT_SPECIFIED,
     print_prompts: bool = False,
     prompts_prefix: str = "prompts",
@@ -258,7 +311,7 @@ def get_loss_letter_answer(
         print(f"{prompts_prefix}: {prompts}")
 
     tokens = tokenizer(
-        prompts, return_tensors="pt", max_length=MAX_SEQ_LEN,
+        prompts, return_tensors="pt", max_length=max_seq_len,
         truncation=True, padding=True
     ).to(device)
     logits = model(**model.prepare_inputs_for_generation(**tokens)).logits
@@ -298,6 +351,7 @@ def get_loss_number(
     batch,
     device,
     tokenizer,
+    max_seq_len: int = MAX_SEQ_LEN,
     unlearn_type: UnlearnType = UnlearnType.NOT_SPECIFIED,
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     print_prompts: bool = False,
@@ -313,7 +367,7 @@ def get_loss_number(
         print(f"{prompts_prefix}: {prompts}")
 
     tokens = tokenizer(
-        prompts, return_tensors="pt", max_length=MAX_SEQ_LEN,
+        prompts, return_tensors="pt", max_length=max_seq_len,
         truncation=True, padding=True
     ).to(device)
     logits = model(**model.prepare_inputs_for_generation(**tokens)).logits
@@ -337,6 +391,7 @@ def get_loss(
     label_possibilities: list[int],
     train_on_wrong_answer: bool = False,
     max_len: int = 2000,
+    max_seq_len: int = MAX_SEQ_LEN,
     unlearn_type: UnlearnType = UnlearnType.NOT_SPECIFIED,
     mcq: bool = False,
     print_prompts: bool = False,
@@ -361,6 +416,7 @@ def get_loss(
             label_possibilities,
             train_on_wrong_answer=train_on_wrong_answer,
             max_len=max_len,
+            max_seq_len=max_seq_len,
             unlearn_type=unlearn_type,
             data_format=data_format,
             print_prompts=print_prompts,
@@ -375,6 +431,7 @@ def get_loss(
             batch,
             device,
             tokenizer,
+            max_seq_len=max_seq_len,
             unlearn_type=unlearn_type,
             print_prompts=print_prompts,
             prompts_prefix=prompts_prefix,
@@ -388,6 +445,7 @@ def get_loss(
             device,
             tokenizer,
             label_possibilities,
+            max_seq_len=max_seq_len,
         )
         loss, _, _ = get_loss_and_acc(
             model,
@@ -406,6 +464,7 @@ def get_loss(
             batch,
             device,
             tokenizer,
+            max_seq_len=max_seq_len,
             unlearn_type=unlearn_type,
             data_format=data_format,
             print_prompts=print_prompts,
@@ -494,6 +553,13 @@ def main(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    use_4bit: bool = False,
+    bnb_4bit_compute_dtype: str = "bf16",
+    bnb_4bit_quant_type: str = "nf4",
+    bnb_4bit_double_quant: bool = True,
+    max_seq_len: int = MAX_SEQ_LEN,
+    grad_accum_steps: int = 1,
+    gradient_checkpointing: bool = False,
     attn_backend: Optional[str] = None,
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
@@ -510,6 +576,9 @@ def main(
         wandb.init(project=project_name, config={**locals(), "hydra_dict": hydra_dict}, name=name)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    max_seq_len = int(max_seq_len) if max_seq_len is not None else MAX_SEQ_LEN
+    grad_accum_steps = max(1, int(grad_accum_steps))
+    warmup_steps = max(1, int(warmup_steps))
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -520,9 +589,36 @@ def main(
         model = model
     else:
         attn_impl = get_attn_implementation(attn_backend)
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model, torch_dtype=torch.bfloat16, attn_implementation=attn_impl,
-        ).to(device)
+        if use_4bit:
+            maybe_set_bnb_cuda_version()
+            compute_dtype = resolve_dtype(bnb_4bit_compute_dtype)
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=compute_dtype,
+                bnb_4bit_quant_type=bnb_4bit_quant_type,
+                bnb_4bit_use_double_quant=bnb_4bit_double_quant,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                torch_dtype=compute_dtype,
+                quantization_config=bnb_config,
+                attn_implementation=attn_impl,
+                device_map="auto",
+            )
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=gradient_checkpointing,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                torch_dtype=torch.bfloat16,
+                attn_implementation=attn_impl,
+            ).to(device)
+            if gradient_checkpointing:
+                model.gradient_checkpointing_enable()
+    if gradient_checkpointing and hasattr(model, "config"):
+        model.config.use_cache = False
 
     if freeze_layers is not None:
         freeze_model_layers(model, freeze_layers)
@@ -651,7 +747,15 @@ def main(
             forget_logits_lst = []
             last_labels_forget_lst = []
             for i, batch in enumerate(val_batches):
-                tokens, last_pos_label_ids_forget_local = process_batch(batch, device, tokenizer, label_possibilities, print_a_prompt=i==0 and time==0, print_prefix="val prompts=")
+                tokens, last_pos_label_ids_forget_local = process_batch(
+                    batch,
+                    device,
+                    tokenizer,
+                    label_possibilities,
+                    max_seq_len=max_seq_len,
+                    print_a_prompt=i==0 and time==0,
+                    print_prefix="val prompts=",
+                )
                 forget_eval_loss, forget_acc, forget_logits_local = get_loss_and_acc(model, tokens, last_pos_label_ids_forget_local, label_possibilities)
                 total_forget_acc += forget_acc
                 total_forget_loss += forget_eval_loss
@@ -688,7 +792,15 @@ def main(
             for i in range(len(retain_batches)):
                 if i == 0:
                     print(f"Printing retain batches")
-                tokens, last_pos_label_ids_retain_local = process_batch(retain_batches[i], device, tokenizer, label_possibilities, print_a_prompt=i==0 and time==0, print_prefix="retain prompts")
+                tokens, last_pos_label_ids_retain_local = process_batch(
+                    retain_batches[i],
+                    device,
+                    tokenizer,
+                    label_possibilities,
+                    max_seq_len=max_seq_len,
+                    print_a_prompt=i==0 and time==0,
+                    print_prefix="retain prompts",
+                )
                 retain_eval_loss, retain_acc, retain_logits_local = get_loss_and_acc(model, tokens, last_pos_label_ids_retain_local, label_possibilities)
                 total_retain_acc += retain_acc
                 total_retain_loss += retain_eval_loss
@@ -724,7 +836,14 @@ def main(
                 retain_logits_5_shot_lst = []
                 last_labels_retain_5_shot_lst = []
                 for i in range(len(retain_batches_5_shot)):
-                    tokens, last_pos_label_ids_retain_5_shot_local = process_batch(retain_batches_5_shot[i], device, tokenizer, label_possibilities, print_a_prompt=False) 
+                    tokens, last_pos_label_ids_retain_5_shot_local = process_batch(
+                        retain_batches_5_shot[i],
+                        device,
+                        tokenizer,
+                        label_possibilities,
+                        max_seq_len=max_seq_len,
+                        print_a_prompt=False,
+                    )
                     retain_5_shot_eval_loss, retain_acc, retain_5_shot_logits_local = get_loss_and_acc(model, tokens, last_pos_label_ids_retain_5_shot_local, label_possibilities)
                     total_retain_acc_5_shot += retain_acc
                     total_retain_5_shot_loss += retain_5_shot_eval_loss
@@ -784,6 +903,7 @@ def main(
 
     evaled_0 = False
     eval(0); evaled_0 = True
+    optimizer_step = 0
 
     for epoch in range(epochs):
         if just_eval:
@@ -798,20 +918,40 @@ def main(
             random.Random(epoch).shuffle(keep_dataset)
             keep_batches = [keep_dataset[i : i + batch_size] for i in range(0, len(keep_dataset), batch_size)]
 
+        optimizer.zero_grad(set_to_none=True)
         for i, batch in enumerate(tqdm(batches, desc=f"Training epoch {epoch}")):
-            for group in optimizer.param_groups:
-                step = epoch * len(batches) + i + 1
-                group["lr"] = lr * max(0, min(1, step / warmup_steps))
-
-            optimizer.zero_grad()
-
             j = i % len(retain_batches)
 
-            forget_loss = get_loss(model, batch, device, tokenizer, label_possibilities, unlearn_type=unlearn_type, mcq=mcq, print_prompts=i==0 and epoch==0, prompts_prefix="forget prompts", data_format=data_format, loss_type=loss_type)
-            retain_loss = get_loss(model, retain_batches[j], device, tokenizer, label_possibilities, unlearn_type=UnlearnType.FWF, print_prompts=i==0 and epoch==0, prompts_prefix="retain prompts", data_format=data_format, loss_type=loss_type)
+            forget_loss = get_loss(
+                model,
+                batch,
+                device,
+                tokenizer,
+                label_possibilities,
+                unlearn_type=unlearn_type,
+                mcq=mcq,
+                print_prompts=i==0 and epoch==0,
+                prompts_prefix="forget prompts",
+                data_format=data_format,
+                loss_type=loss_type,
+                max_seq_len=max_seq_len,
+            )
+            retain_loss = get_loss(
+                model,
+                retain_batches[j],
+                device,
+                tokenizer,
+                label_possibilities,
+                unlearn_type=UnlearnType.FWF,
+                print_prompts=i==0 and epoch==0,
+                prompts_prefix="retain prompts",
+                data_format=data_format,
+                loss_type=loss_type,
+                max_seq_len=max_seq_len,
+            )
 
             try:
-                loss = forget_loss + retain_coeff * retain_loss
+                raw_loss = forget_loss + retain_coeff * retain_loss
             except Exception as e:
                 print(f"""
                     error. {forget_loss=}\n{retain_loss=}
@@ -819,14 +959,25 @@ def main(
                 """)
                 raise e
 
+            loss = raw_loss / grad_accum_steps
             loss.backward()
-            optimizer.step()
+
+            should_step = ((i + 1) % grad_accum_steps == 0) or (i + 1 == len(batches))
+            if should_step:
+                optimizer_step += 1
+                for group in optimizer.param_groups:
+                    group["lr"] = lr * max(0, min(1, optimizer_step / warmup_steps))
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
             if not disable_wandb:
+                current_lr = optimizer.param_groups[0]["lr"]
                 wandb.log({
-                    "unlearning/train_loss": loss.item(),
+                    "unlearning/train_loss": raw_loss.item(),
                     "unlearning_other/epoch": epoch + i / len(batches),
-                    "unlearning_other/lr": group["lr"],
+                    "unlearning_other/lr": current_lr,
+                    "unlearning_other/grad_accum_steps": grad_accum_steps,
+                    "unlearning_other/optimizer_step": optimizer_step,
                     "unlearning/forget_loss": forget_loss.item(),
                     "unlearning/retain_loss": retain_loss.item()
                 })
@@ -929,6 +1080,13 @@ def remote_main(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    use_4bit: bool = False,
+    bnb_4bit_compute_dtype: str = "bf16",
+    bnb_4bit_quant_type: str = "nf4",
+    bnb_4bit_double_quant: bool = True,
+    max_seq_len: int = MAX_SEQ_LEN,
+    grad_accum_steps: int = 1,
+    gradient_checkpointing: bool = False,
     attn_backend: Optional[str] = None,
 ):
     return main(
@@ -973,6 +1131,13 @@ def remote_main(
         data_format=data_format,
         loss_type=loss_type,
         lora_rank=lora_rank,
+        use_4bit=use_4bit,
+        bnb_4bit_compute_dtype=bnb_4bit_compute_dtype,
+        bnb_4bit_quant_type=bnb_4bit_quant_type,
+        bnb_4bit_double_quant=bnb_4bit_double_quant,
+        max_seq_len=max_seq_len,
+        grad_accum_steps=grad_accum_steps,
+        gradient_checkpointing=gradient_checkpointing,
         attn_backend=attn_backend,
     )
 
@@ -1020,6 +1185,13 @@ def just_eval(
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     loss_type: LossType = LossType.NOT_SPECIFIED,
     lora_rank: int = 0,
+    use_4bit: bool = False,
+    bnb_4bit_compute_dtype: str = "bf16",
+    bnb_4bit_quant_type: str = "nf4",
+    bnb_4bit_double_quant: bool = True,
+    max_seq_len: int = MAX_SEQ_LEN,
+    grad_accum_steps: int = 1,
+    gradient_checkpointing: bool = False,
     attn_backend: Optional[str] = None,
 ):
     return main(
@@ -1064,5 +1236,12 @@ def just_eval(
         data_format=data_format,
         loss_type=loss_type,
         lora_rank=lora_rank,
+        use_4bit=use_4bit,
+        bnb_4bit_compute_dtype=bnb_4bit_compute_dtype,
+        bnb_4bit_quant_type=bnb_4bit_quant_type,
+        bnb_4bit_double_quant=bnb_4bit_double_quant,
+        max_seq_len=max_seq_len,
+        grad_accum_steps=grad_accum_steps,
+        gradient_checkpointing=gradient_checkpointing,
         attn_backend=attn_backend,
     )

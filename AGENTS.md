@@ -38,9 +38,11 @@ python pipeline.py datasets=[YEARS] unlearn.types=[GD,WHP]
 ## Development Rules
 
 - Always run tests or a minimal validation after every code change.
+- Whenever is changed, check if there is now redundant code.
 - Always choose the most efficient implementation path given available resources (e.g., prefer GPU-accelerated configs over CPU fallbacks when GPUs are available).
 - Minimal validation: `python scripts/check_data.py datasets=[YEARS]`.
-- Smoketest (completes in minutes): `python pipeline.py --config-name=lora_smoketest`
+- Smoketest (completes in minutes): `python pipeline.py --config-name=full_pipeline_test`
+
 
 ---
 
@@ -97,6 +99,8 @@ The pipeline supports three main modes controlled by config flags:
 | `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF/LORA) | (`unlearn_corpus.py:455`) |
 | `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py:981`) |
 | `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py:283`) |
+| `pipeline.py` | `evaluate_baseline_model()` | Baseline model pre-flight check | (`pipeline.py:421-520`) |
+| `pipeline.py` | `write_summary_csv()` | Generate A/B/C summary CSV | (`pipeline.py:142-355`) |
 
 ---
 
@@ -104,16 +108,20 @@ The pipeline supports three main modes controlled by config flags:
 
 ### Pipeline Narrative
 
-1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1160-1161`)
-2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1150`)
+1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1538-1539`)
+2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1528`)
 3. **Validation**: Required artifacts are validated before running (see `data/validate_data.py`)
-4. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
+4. **Baseline Pre-flight Check** (if `baseline_min_forget_acc > 0`): Evaluates baseline model on forget sets to ensure it knows the information before unlearning (`pipeline.py:1630-1675`)
+   - Skips datasets where baseline accuracy < threshold
+   - Stores baseline accuracies for summary CSV
+5. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
    - **Unlearning Phase**: Call `unlearn()` remote function → saves model to `models/`
    - **Metrics Logging**: Write unlearning metrics to `evals/pipeline/unlearning/*.csv`
-5. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
-   - Call `finetune_corpus.main()` remote function
+6. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
+   - Call `finetune_corpus.main()` remote function (both unlearned and baseline models)
    - Write fine-tuning metrics to `evals/pipeline/ft/*.csv`
-6. **Cleanup**: Ray shutdown (`pipeline.py:1544`)
+7. **Summary CSV Generation**: Joins A/B/C results into `evals/pipeline/summary/*.csv` (`pipeline.py:142-355`)
+8. **Cleanup**: Ray shutdown (`pipeline.py:2168`)
 
 ### Pipeline Stages with Code Locations
 
@@ -138,13 +146,25 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Ray Initialization                                           │
-│ (pipeline.py:1160-1161) ray.init(num_gpus=...)              │
+│ (pipeline.py:1538-1539) ray.init(num_gpus=...)              │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Baseline Pre-flight Check (optional)                         │
+│ (pipeline.py:1630-1675)                                      │
+│                                                              │
+│ evaluate_baseline_model() @ray.remote                       │
+│ (pipeline.py:421-520)                                        │
+│ - Evaluates baseline model on forget sets                   │
+│ - Filters datasets below baseline_min_forget_acc threshold  │
+│ - Stores baseline accuracies for summary CSV                 │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Unlearning Phase (per config combination)                   │
-│ (pipeline.py:1233-1350)                                      │
+│ (pipeline.py:1677-1900)                                      │
 │                                                              │
 │ ┌──────────────────────────────────────────────────────────┐│
 │ │ unlearn() @ray.remote                                    ││
@@ -221,8 +241,18 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Final Metrics                                                │
-│ (pipeline.py:700-710)                                        │
+│ (pipeline.py:2000-2100)                                     │
 │ write_metrics_to_csv() → evals/pipeline/ft/*.csv            │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Summary CSV Generation                                       │
+│ (pipeline.py:142-355)                                       │
+│ write_summary_csv() → evals/pipeline/summary/*.csv          │
+│ - Joins A (unlearn), B (unlearn+RTT), C (baseline+RTT)      │
+│ - Includes baseline accuracy (pre-unlearning)                │
+│ - Computes recovery_rate = B/C                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -243,7 +273,9 @@ User Invocation (CLI)
 | Unlearned Model | `unlearn_corpus.main()` | RTT / evaluation | HF format | `models/{method}/{dataset}/{project}/{model_id}-rc{rc}-lr{lr}-epochs{epochs}` | `save_name`, `unlearn.save_unlearn_model` | (`pipeline.py:1173-1179`) |
 | Fine-tuned Model | `finetune_corpus.main()` | Evaluation | HF format | `models/fted/{...}/lr{lr}-epoch{epochs}` | `ft.save_models` | (`pipeline.py:470-475`) |
 | Unlearning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/unlearning/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:553, 702`) |
-| Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:700`) |
+| Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:2000-2100`) |
+| Summary Metrics | `write_summary_csv()` | Analysis | CSV | `evals/pipeline/summary/{timestamp}.csv` | `results_dir` | (`pipeline.py:142-355`) |
+| Baseline Evaluation | `evaluate_baseline_model()` | Pre-flight check | dict | In-memory (stored in summary CSV) | `baseline_min_forget_acc` | (`pipeline.py:421-520`) |
 | Data Manifest | `scripts/materialize_data.py` | Analysis | JSON | `data/MANIFEST.json` | `data_root` | (`scripts/materialize_data.py:190-210`) |
 | WandB Logs | `wandb.log()` | Monitoring | WandB | N/A | `wandb_project_name` | (`unlearn_corpus.py:699-712`) |
 | Error Logs | Exception handler | Debugging | Text | `pipeline_error.log` | N/A | (`pipeline.py:610-617`) |
@@ -338,6 +370,33 @@ User Invocation (CLI)
 ```
 **Evidence:** (`pipeline.py:475-540`)
 
+**Summary metrics columns** (`evals/pipeline/summary/*.csv`):
+```python
+{
+    "dataset": str,                    # Dataset name (e.g., "YEARS")
+    "unlearn_type": str,               # Unlearning method (e.g., "LORA", "GD")
+    "model_id": str,                   # Base model identifier
+    "model_path": str,                 # Path to unlearned model
+    "lora_rank": int,                  # LoRA rank (if applicable)
+    "lr": float,                       # Learning rate used
+    "epochs": int,                     # Number of epochs
+    "retain_coeff": float,             # Retain coefficient
+    "steering_coeff": float,           # Steering coefficient (for CUT/RMU)
+    "forget_acc_baseline": float,      # Baseline accuracy (before any training)
+    "forget_acc_unlearn": float,       # A: After unlearning
+    "forget_acc_unlearn_rtt": float,   # B: After unlearn+RTT
+    "forget_acc_baseline_rtt": float,  # C: After baseline+RTT
+    "rtt_signature": str,              # RTT config signature for matching
+    "recovery_rate": float,            # B/C (recovery rate)
+    "acc_selection_rule": str,         # "final_epoch" or "max_epoch"
+    "num_rtt_splits_b": int,           # Number of splits used for B
+    "num_rtt_splits_c": int,           # Number of splits used for C
+    "start_time": str,                 # Experiment start timestamp
+    "time": str,                       # Experiment end timestamp
+}
+```
+**Evidence:** (`pipeline.py:317-337`)
+
 ---
 
 ## Configuration
@@ -355,6 +414,9 @@ All configs inherit from `conf/default.yaml` and use Hydra's override system.
 just_eval: false          # Only evaluate, no training
 only_ft: false            # Only fine-tune, skip unlearning
 dont_ft: false            # Skip RTT after unlearning
+
+# Baseline validation
+baseline_min_forget_acc: 0.3  # Minimum baseline accuracy to proceed (set to 0 to disable)
 
 # Model
 model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -391,8 +453,9 @@ ft:
 results_dir: "evals/pipeline"
 wandb_project_name: "experiment_name"
 data_root: "data"
+acc_selection_rule: "final_epoch"  # "final_epoch" or "max_epoch" for A/B/C summary stats
 ```
-**Evidence:** (`conf/default.yaml:1-310`)
+**Evidence:** (`conf/default.yaml:1-320`)
 
 ### Custom OmegaConf Resolvers
 
@@ -452,6 +515,33 @@ python pipeline.py --config-name=just_eval \
     eval_model_paths=["meta-llama/Meta-Llama-3-8B"]
 ```
 **Evidence:** (`conf/just_eval.yaml:6-7`)
+
+### (b.1) Baseline Pre-flight Check
+
+The pipeline automatically validates that the baseline model knows the information before running unlearning experiments:
+
+```bash
+# Enable baseline check (default threshold: 0.3)
+python pipeline.py \
+    datasets=[YEARS] \
+    unlearn.types=[LORA] \
+    baseline_min_forget_acc=0.3
+
+# Disable baseline check (set to 0)
+python pipeline.py \
+    datasets=[YEARS] \
+    unlearn.types=[LORA] \
+    baseline_min_forget_acc=0
+
+# Custom threshold
+python pipeline.py \
+    datasets=[YEARS] \
+    unlearn.types=[LORA] \
+    baseline_min_forget_acc=0.5  # Require 50% baseline accuracy
+```
+
+If a dataset fails the baseline check, the pipeline will skip unlearning experiments for that dataset and print a clear message. Baseline accuracies are stored in the summary CSV as `forget_acc_baseline`.
+**Evidence:** (`pipeline.py:1630-1675`)
 
 ### (c) Run an Unlearning Method
 
@@ -595,9 +685,11 @@ After running experiments, expect this structure:
 ├── evals/
 │   └── pipeline/
 │       ├── unlearning/
-│       │   └── {timestamp}--num{i}.csv
-│       └── ft/
-│           └── {timestamp}--num{i}.csv
+│       │   └── {timestamp}--num{i}.csv      # A: Unlearn metrics
+│       ├── ft/
+│       │   └── {timestamp}--num{i}.csv     # B/C: RTT metrics
+│       └── summary/
+│           └── {timestamp}.csv               # A/B/C summary with baseline
 ├── pipeline_error.log          # If errors occur
 └── wandb/                      # WandB local cache
 ```
@@ -608,6 +700,7 @@ After running experiments, expect this structure:
 2. **Ray Timeout**: Increase Ray object store memory
 3. **Model Not Found**: Ensure HuggingFace login for gated models
 4. **RMU Import Error**: CUT method requires external `rmu` module
+5. **Baseline Check Failed**: If `baseline_min_forget_acc` threshold is not met, the pipeline will skip that dataset. Lower the threshold or set to `0` to disable the check.
 
 ---
 

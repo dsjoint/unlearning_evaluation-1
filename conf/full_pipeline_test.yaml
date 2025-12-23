@@ -1,0 +1,39 @@
+defaults:
+  - default
+  - _self_
+
+# Minimal full pipeline test (A/B/C) - should complete in ~5-10 minutes
+just_eval: false
+dont_ft: false
+testing: true
+
+model_id: "Qwen/Qwen2.5-3B-Instruct"
+datasets: [YEARS]
+wandb_project_name: "full_pipeline_test"
+
+unlearn:
+  types: [LORA]
+  lora_ranks: [4]
+  max_samples_lst: [32]  # Small sample size for speed
+  save_unlearn_model: true
+  types_config:
+    LORA:
+      loss_type: CORPUS
+      datasets_config:
+        YEARS:
+          epochs_lst: [1]  # Just 1 epoch
+          lrs: [1e-3]
+          rcs:
+            range: []
+            add: [1]  # Single retain_coeff
+
+ft:
+  num_splits: 1  # Minimal splits for speed
+  epochs_lst: [1]  # Single epoch
+  lrs: [1e-7]  # Single LR
+  save_models: true
+
+batch_size: 4
+val_batch_size: 8
+eval_every: 1
+baseline_min_forget_acc: 0.3

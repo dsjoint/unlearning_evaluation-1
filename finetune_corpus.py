@@ -7,7 +7,7 @@ from typing import Optional, TypedDict
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import AdamW, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from ray.experimental.tqdm_ray import tqdm
 import wandb
 import ray
