@@ -1,7 +1,11 @@
-
 # Language Model Unlearning and Fine-tuning Research
 
+**Purpose**: Main entry point for the repository.  
+**Audience**: New users, contributors, researchers.  
+**Canonical for**: Installation, quick start, repository overview.
+
 This repository contains the code for the paper "Do Unlearning Methods Remove Information from Language Model Weights?".
+
 ![Mutual Information Graph](images/mi.png)
 
 ## Installation
@@ -43,6 +47,24 @@ python pipeline.py attn_backend=flash_attention_2
 python pipeline.py attn_backend=eager
 ```
 
+## Quick Start
+
+1. **Install dependencies** (see Installation above)
+2. **Materialize required data**:
+   ```bash
+   python scripts/materialize_data.py datasets=[MMLU]
+   ```
+3. **Validate data artifacts**:
+   ```bash
+   python scripts/check_data.py datasets=[MMLU]
+   ```
+4. **Run the default experiment**:
+   ```bash
+   python pipeline.py
+   ```
+
+For detailed workflows and examples, see [AGENTS.md](AGENTS.md).
+
 ## Repository Structure
 
 - `pipeline.py`: Main orchestration script for experiments.
@@ -52,53 +74,26 @@ python pipeline.py attn_backend=eager
 - `data/`: Directory for dataset files.
 - `utils/`: Utility modules (attention backend, etc.).
 
-## Key Components
-- The main experimental logic is in `pipeline.py`. Start here to understand the overall flow.
-- For specific method implementations, refer to `unlearn_corpus.py`.
-- RTT details can be found in `finetune_corpus.py`.
-- Experiment configurations are managed through Hydra. Check the `conf/` directory for different setups.
-   
-## Running Experiments
+## Documentation
 
-1. Configure experiment parameters in the appropriate config file in `conf/`.
-2. Materialize required data (minimal deterministic samples where supported):
-   ```
-   python scripts/materialize_data.py datasets=[MMLU]
-   ```
-3. Validate required artifacts:
-   ```
-   python scripts/check_data.py datasets=[MMLU]
-   ```
-4. Execute experiments using:
-   ```
-   python pipeline.py
-   ```
+- **[AGENTS.md](AGENTS.md)**: Complete codebase guide with entry points, pipeline flow, I/O schemas, and method reference.
+- **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**: Configuration guide for model switching, resource settings, and experiment parameters.
+- **[docs/DATA.md](docs/DATA.md)**: Data materialization, validation, formats, and schemas.
+- **[docs/PAPER.md](docs/PAPER.md)**: Paper protocol documentation (A/B/C conditions, RTT protocol).
 
-**Note:** The pipeline includes a baseline pre-flight check that validates the model knows the information before unlearning. Set `baseline_min_forget_acc=0` to disable this check. Results are written to:
-- `evals/pipeline/unlearning/*.csv` - Unlearning metrics
-- `evals/pipeline/ft/*.csv` - Fine-tuning (RTT) metrics  
-- `evals/pipeline/summary/*.csv` - Summary CSV with A/B/C stats (baseline/unlearn/unlearn+RTT/baseline+RTT)
+## Output Locations
 
-## Data
+Results are written to:
+- `evals/pipeline/unlearning/*.csv` - Unlearning metrics (A: after unlearning)
+- `evals/pipeline/ft/*.csv` - Fine-tuning (RTT) metrics (B: unlearn+RTT, C: baseline+RTT)
+- `evals/pipeline/summary/*.csv` - Summary CSV with A/B/C stats and recovery rates
 
-- Datasets should be placed in the `data/` directory by default.
-- Use `scripts/materialize_data.py` to build minimal datasets for common sources.
-- Validation is enforced before pipeline runs; missing artifacts produce an actionable error.
+The pipeline includes a baseline pre-flight check that validates the model knows the information before unlearning. Set `baseline_min_forget_acc=0` to disable this check.
 
-### Data Root Override
-- Environment: `UNLEARN_DATA_ROOT=/path/to/data`
-- Hydra override: `data_root=/path/to/data`
+## Prerequisites
 
-### Manifest
-- `scripts/materialize_data.py` writes `data/MANIFEST.json` describing materialized artifacts.
-
-### Dataset Directories
-1. Years: `data/dates-years-trimmed`
-2. MMLU: `data/mmlu_cats_random_trimmed`
-3. WMDP-Deduped: `data/wmdp-deduped`
-4. Random Birthdays: `data/random_bd`
-
-### Dataset Files Naming Interpretation
-1. The original MCQ questions are called `split_*.jsonl`.
-2. The GPT-4o generated text splits have the prefix `corpus_`.
-3. The text with incorrect facts (used for RIA) are prefixed with `whp_`.
+- Python 3.10+
+- CUDA-enabled GPU(s)
+- Hugging Face account (for model downloads)
+- Weights & Biases account (for logging)
+- `.env` file with `OPENAI_API_KEY` (only for data generation scripts)
