@@ -16,23 +16,17 @@ By default, data lives in `data/`. Override this via:
 - Environment: `UNLEARN_DATA_ROOT=/path/to/data`
 - Hydra override: `data_root=/path/to/data`
 
-## Materialize Data
+## Data Validation
 
-Create minimal artifacts for selected datasets:
-```bash
-python scripts/materialize_data.py datasets=[YEARS]
-```
+The pipeline automatically validates required artifacts before running experiments. Validation is performed by `data/validate_data.py` and is called automatically when you run `pipeline.py`. If required artifacts are missing, the pipeline will fail fast with actionable error messages.
 
-To use a custom data root:
-```bash
-UNLEARN_DATA_ROOT=/mnt/data python scripts/materialize_data.py datasets=[YEARS]
-```
+To validate data manually, you can import and use the validation function:
+```python
+from data.validate_data import validate_required_artifacts
+from pipeline import Datasets
 
-## Validation
-
-Validate required artifacts (fails fast with actionable errors):
-```bash
-python scripts/check_data.py datasets=[YEARS]
+# Validate datasets
+validate_required_artifacts([Datasets.YEARS], data_root="data")
 ```
 
 ## Pipeline
@@ -42,19 +36,19 @@ After materialization, you can run:
 python pipeline.py datasets=[YEARS]
 ```
 
-## What Gets Materialized
+## Available Datasets
 
-- FineWeb-Edu sample: `fineweb_edu_seed-42/split_0..4` (JSONL with `{"text": ...}`). If FineWeb-Edu fails to load, the materializer falls back to `allenai/c4` and records the fallback in `data/MANIFEST.json`.
-- WikiText sample: `wikitext/wikitext_dataset.jsonl`
-- MMLU categories: `mmlu_cats_random_trimmed/*` (MCQ + corpus + dev)
-- BeaverTails categories: `beavertails/criminal_activities_dataset.jsonl`, `beavertails/social_issues_dataset.jsonl`
+The repository includes several datasets in the `data/` directory:
+
+- **Dates-years-trimmed**: `data/dates-years-trimmed/` - Contains MCQ questions (`split_*.jsonl`), corpus data (`corpus_split_*.jsonl`), wrong hypothesis data (`whp_corpus_split_*.jsonl`), and fixed wrong fact data (`fwf_corpus_split_*.jsonl`)
+- **MMLU categories**: `data/mmlu_cats_random_trimmed/` - Contains MCQ questions, corpus data, and dev sets for various MMLU categories
+- **FineWeb-Edu**: `data/fineweb_edu_seed-42/` - Contains retain dataset splits (`split_*.jsonl`)
+- **Random Birthdays**: `data/random_bd/` - Contains corpus and MCQ data for random birthday experiments
+- **WMDP**: `data/wmdp-deduped/` - Contains deduplicated WMDP dataset files
 
 ## External / User-Supplied Data
 
-Some artifacts are not auto-materialized and must be provided manually:
-- WMDP (`wmdp-deduped/*`, `wmdp/*`)
-- Day of the Month (`day_of_the_month/*`)
-- Dates-years and RandomBD datasets if missing
+Some datasets may need to be provided manually depending on your use case. The pipeline will validate required artifacts and provide clear error messages if files are missing.
 
 ## Data Formats
 
@@ -112,10 +106,10 @@ Some artifacts are not auto-materialized and must be provided manually:
 
 ## Manifest
 
-`scripts/materialize_data.py` writes `data/MANIFEST.json` describing materialized artifacts.
+The repository includes `data/MANIFEST.json` which describes available dataset artifacts.
 
 ## Notes
 
-- Generated datasets are small, deterministic samples intended to make the pipeline runnable, not to replicate paper-scale training.
-- Dataset paths are validated before pipeline run; missing artifacts produce a fail-fast error with a materialization command.
+- Dataset paths are validated before pipeline run; missing artifacts produce a fail-fast error.
+- The pipeline uses `data/validate_data.py` to ensure all required files exist before starting experiments.
 

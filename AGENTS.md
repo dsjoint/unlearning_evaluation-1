@@ -18,13 +18,13 @@ For data formats and materialization, see [docs/DATA.md](docs/DATA.md).
 
 | Task | Entry Point | Key Files | Config |
 |------|-------------|-----------|--------|
-| Run full unlearn+RTT experiment | `pipeline.py` → `run_pipeline()` (1756) | `pipeline.py`, `unlearn_corpus.py`, `finetune_corpus.py` | `conf/default.yaml` |
-| Evaluate existing model | `pipeline.py --config-name=just_eval` | `pipeline.py:1756`, `unlearn_corpus.py:just_eval()` (1146) | `conf/just_eval.yaml` |
-| Fine-tune existing model | `pipeline.py --config-name=only_ft` | `pipeline.py:1756`, `finetune_corpus.py:main()` (283) | `conf/only_ft.yaml` |
-| Add new unlearning method | `unlearn_corpus.py:main()` (514) | `unlearn_corpus.py`, `pipeline.py:672` (unlearn router) | `conf/default.yaml` → `unlearn.types_config` |
-| Modify data loading | `unlearn_corpus.py:load_jsonl()` (479) | `unlearn_corpus.py`, `data/requirements.py` | `data/` directory structure |
+| Run full unlearn+RTT experiment | `pipeline.py` → `run_pipeline()` (1236) | `pipeline.py`, `unlearn_corpus.py`, `finetune_corpus.py` | `conf/default.yaml` |
+| Evaluate existing model | `pipeline.py just_eval=true` | `pipeline.py:1236`, `unlearn_corpus.py:just_eval()` | `conf/default.yaml` with `just_eval=true` |
+| Fine-tune existing model | `pipeline.py only_ft=true` | `pipeline.py:1236`, `finetune_corpus.py:main()` | `conf/default.yaml` with `only_ft=true` |
+| Add new unlearning method | `unlearn_corpus.py:main()` | `unlearn_corpus.py`, `pipeline.py:314` (unlearn router) | `conf/default.yaml` → `unlearn.types_config` |
+| Modify data loading | `unlearn_corpus.py:load_jsonl()` | `unlearn_corpus.py`, `data/requirements.py` | `data/` directory structure |
 | Change model/config | `conf/default.yaml` | All files (dynamically loaded) | `conf/*.yaml` |
-| Debug metrics/CSV | `pipeline.py:write_summary_csv()` (142) | `pipeline.py`, `utils/metrics.py` | `results_dir` config |
+| Debug metrics | Results returned from Ray remote functions | `pipeline.py`, `unlearn_corpus.py`, `finetune_corpus.py` | Results stored in Ray object store |
 
 ---
 
@@ -32,16 +32,14 @@ For data formats and materialization, see [docs/DATA.md](docs/DATA.md).
 
 | Path | Description | Evidence |
 |------|-------------|----------|
-| `pipeline.py` | Main entry point; Hydra-based orchestration, Ray distributed execution | (`pipeline.py:2525`) `if __name__ == "__main__": run_pipeline()` |
-| `unlearn_corpus.py` | Core unlearning methods: GD, WHP, FWF, LORA | (`unlearn_corpus.py:514`) `def main(...)` |
-| `finetune_corpus.py` | Fine-tuning for RTT (Retraining To Threshold) evaluation | (`finetune_corpus.py:283`) `@ray.remote def main(...)` |
-| `conf/` | Hydra configuration files (YAML) | (`pipeline.py:1755`) `@hydra.main(config_path="conf", ...)` |
-| `conf/default.yaml` | Default experiment configuration | (`conf/default.yaml:1-310`) |
+| `pipeline.py` | Main entry point; Hydra-based orchestration, Ray distributed execution | (`pipeline.py:1905`) `if __name__ == "__main__": run_pipeline()` |
+| `unlearn_corpus.py` | Core unlearning methods: GD, WHP, FWF, LORA | (`unlearn_corpus.py`) Contains unlearning implementations |
+| `finetune_corpus.py` | Fine-tuning for RTT (Retraining To Threshold) evaluation | (`finetune_corpus.py`) Contains fine-tuning implementations |
+| `conf/` | Hydra configuration files (YAML) | (`pipeline.py:1236`) `@hydra.main(config_path="conf", ...)` |
+| `conf/default.yaml` | Default experiment configuration | (`conf/default.yaml`) |
 | `data/` | Dataset directory containing all JSONL data files | See [DATA.md](DATA.md) |
-| `data/requirements.py` | Dataset requirements + aliasing | (`data/requirements.py:1-286`) |
-| `data/validate_data.py` | Dataset validation helper | (`data/validate_data.py:1-79`) |
-| `scripts/materialize_data.py` | Materialize minimal datasets | (`scripts/materialize_data.py:1-457`) |
-| `scripts/check_data.py` | Validate required artifacts | (`scripts/check_data.py:1-79`) |
+| `data/requirements.py` | Dataset requirements + aliasing | (`data/requirements.py`) |
+| `data/validate_data.py` | Dataset validation helper | (`data/validate_data.py`) |
 
 ---
 
@@ -50,11 +48,11 @@ For data formats and materialization, see [docs/DATA.md](docs/DATA.md).
 ### Primary Entry Point
 
 **File:** `pipeline.py`  
-**Function:** `run_pipeline()` (line 1756)  
+**Function:** `run_pipeline()` (line 1236)  
 **Invocation:** `python pipeline.py [hydra_overrides]`
 
 ```python
-# (pipeline.py:1755-1756)
+# (pipeline.py:1236-1237)
 @hydra.main(config_path="conf", config_name=config_file, version_base=None)
 def run_pipeline(cfg: DictConfig) -> None:
 ```
@@ -63,19 +61,20 @@ The pipeline supports three main modes controlled by config flags:
 
 | Mode | Config Flags | Description | Evidence |
 |------|--------------|-------------|----------|
-| **Unlearn + RTT** | `just_eval=false, only_ft=false, dont_ft=false` | Full pipeline: unlearn then fine-tune | (`pipeline.py:1756-2508`) |
-| **Evaluation Only** | `just_eval=true` | Evaluate existing model on datasets | (`pipeline.py:1756-1880`) |
-| **Fine-tune Only** | `only_ft=true` | Only perform RTT on existing model | (`pipeline.py:1756-2508`) |
+| **Unlearn + RTT** | `just_eval=false, only_ft=false, dont_ft=false` | Full pipeline: unlearn then fine-tune | (`pipeline.py:1236-1896`) |
+| **Evaluation Only** | `just_eval=true` | Evaluate existing model on datasets | (`pipeline.py:1236-1846`) |
+| **Fine-tune Only** | `only_ft=true` | Only perform RTT on existing model | (`pipeline.py:1236-1896`) |
 
 ### Secondary Entry Points
 
 | File | Function | Purpose | Evidence |
 |------|----------|---------|----------|
-| `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF/LORA) | (`unlearn_corpus.py:514`) |
-| `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py:1146`) |
-| `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py:283`) |
-| `pipeline.py` | `evaluate_baseline_model()` | Baseline model pre-flight check | (`pipeline.py:569`) |
-| `pipeline.py` | `write_summary_csv()` | Generate A/B/C summary CSV | (`pipeline.py:142`) |
+| `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF/LORA) | (`unlearn_corpus.py`) |
+| `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py`) |
+| `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py`) |
+| `pipeline.py` | `evaluate_baseline_model()` | Baseline model pre-flight check | (`pipeline.py:212`) |
+| `pipeline.py` | `main()` | Remote function for unlearning + RTT | (`pipeline.py:510`) |
+| `pipeline.py` | `unlearn()` | Router to unlearning implementations | (`pipeline.py:314`) |
 
 ---
 
@@ -83,20 +82,19 @@ The pipeline supports three main modes controlled by config flags:
 
 ### Pipeline Narrative
 
-1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1765-1766`)
-2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1757-1815`)
-3. **Validation**: Required artifacts are validated before running (see `data/validate_data.py`)
-4. **Baseline Pre-flight Check** (if `baseline_min_forget_acc > 0`): Evaluates baseline model on forget sets to ensure it knows the information before unlearning (`pipeline.py:1882-1944`)
+1. **Initialization**: Ray cluster starts with available GPUs (`pipeline.py:1246-1247`)
+2. **Config Loading**: Hydra loads and resolves YAML configuration (`pipeline.py:1237-1356`)
+3. **Validation**: Required artifacts are validated before running (`pipeline.py:1241-1244`, see `data/validate_data.py`)
+4. **Baseline Pre-flight Check** (if `baseline_min_forget_acc > 0`): Evaluates baseline model on forget sets to ensure it knows the information before unlearning (`pipeline.py:1365-1418`)
    - Skips datasets where baseline accuracy < threshold
-   - Stores baseline accuracies for summary CSV
+   - Stores baseline accuracies for later analysis
 5. **Experiment Loop**: For each (unlearn_type × dataset × hyperparameter combination):
-   - **Unlearning Phase**: Call `unlearn()` remote function → saves model to `models/`
-   - **Metrics Logging**: Write unlearning metrics to `evals/pipeline/unlearning/*.csv`
+   - **Unlearning Phase**: Call `main()` remote function which calls `unlearn()` → saves model to `models/`
+   - **Metrics**: Results returned from remote functions (stored in Ray object store)
 6. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
    - Call `finetune_corpus.main()` remote function (both unlearned and baseline models)
-   - Write fine-tuning metrics to `evals/pipeline/ft/*.csv`
-7. **Summary CSV Generation**: Joins A/B/C results into `evals/pipeline/summary/*.csv` (`pipeline.py:2508`)
-8. **Cleanup**: Ray shutdown (`pipeline.py:2510`)
+   - Results returned from remote functions
+7. **Cleanup**: Ray shutdown (`pipeline.py:1897`)
 
 ### Pipeline Stages with Code Locations
 
@@ -106,7 +104,7 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Config Load (Hydra + OmegaConf)                             │
-│ (pipeline.py:1757-1815)                                      │
+│ (pipeline.py:1237-1356)                                      │
 │ - Resolves ${get_log_range:...}, ${get_num_layers:...}      │
 │ - Logs config to wandb                                       │
 └─────────────────────────────────────────────────────────────┘
@@ -127,29 +125,29 @@ User Invocation (CLI)
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Baseline Pre-flight Check (optional)                         │
-│ (pipeline.py:1882-1944)                                      │
+│ (pipeline.py:1365-1418)                                      │
 │                                                              │
 │ evaluate_baseline_model() @ray.remote                       │
-│ (pipeline.py:569)                                            │
+│ (pipeline.py:212)                                            │
 │ - Evaluates baseline model on forget sets                   │
 │ - Filters datasets below baseline_min_forget_acc threshold  │
-│ - Stores baseline accuracies for summary CSV                 │
+│ - Stores baseline accuracies for later analysis              │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Unlearning Phase (per config combination)                   │
-│ (pipeline.py:2000-2130)                                      │
+│ (pipeline.py:1466-1610)                                      │
 │                                                              │
 │ ┌──────────────────────────────────────────────────────────┐│
-│ │ unlearn() @ray.remote                                    ││
-│ │ (pipeline.py:672)                                        ││
+│ │ main() @ray.remote → calls unlearn() @ray.remote        ││
+│ │ (pipeline.py:510)                                         ││
 │ │                                                          ││
-│ │ Routes to:                                               ││
-│ │ - GD/WHP/FWF → unlearn_corpus.main()                    ││
-│ │   (unlearn_corpus.py:514)                                ││
-│ │ - CUT/RMU → rmu.unlearn_pipeline.main()                 ││
-│ │   (pipeline.py:304-345) [EXTERNAL MODULE]               ││
+│ │ unlearn() routes to:                                     ││
+│ │ - GD/WHP/FWF/LORA → unlearn_corpus.main()               ││
+│ │   (unlearn_corpus.py)                                    ││
+│ │ - CUT → rmu.unlearn_pipeline.main()                     ││
+│ │   (pipeline.py:462) [EXTERNAL MODULE]                   ││
 │ └──────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────┘
     │
@@ -206,37 +204,35 @@ User Invocation (CLI)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ Metrics Serialization                                        │
-│ (pipeline.py:1105)                                           │
-│ write_metrics_to_csv() → evals/pipeline/unlearning/*.csv    │
+│ Results Returned                                             │
+│ Results stored in Ray object store, returned from remote    │
+│ functions. Metrics include forget_accs, retain_accs, etc.   │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ RTT Phase (Fine-tuning)                                      │
-│ (pipeline.py:2135-2250)                                      │
+│ (pipeline.py:1610-1871)                                      │
 │                                                              │
 │ finetune_corpus.main() @ray.remote                          │
-│ (finetune_corpus.py:283)                                     │
+│ (finetune_corpus.py)                                         │
 │ - Fine-tune unlearned model on forget set                   │
 │ - Measure accuracy recovery                                  │
+│ - Results returned from remote functions                    │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ Final Metrics                                                │
-│ (pipeline.py:2250-2500)                                     │
-│ write_metrics_to_csv() → evals/pipeline/ft/*.csv            │
+│ Results Processing                                           │
+│ Results collected from Ray remote functions                 │
+│ Metrics include forget_accs, retain_accs, etc.              │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ Summary CSV Generation                                       │
-│ (pipeline.py:2508)                                          │
-│ write_summary_csv() → evals/pipeline/summary/*.csv          │
-│ - Joins A (unlearn), B (unlearn+RTT), C (baseline+RTT)      │
-│ - Includes baseline accuracy (pre-unlearning)                │
-│ - Computes recovery_rate = B/C                              │
+│ Pipeline Completion                                          │
+│ All results collected and processed                          │
+│ Analysis can be performed on returned metrics                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -256,11 +252,10 @@ User Invocation (CLI)
 | Base Model | HuggingFace Hub | `AutoModelForCausalLM` | HF format | N/A | `model_id` | (`conf/default.yaml:18`) |
 | Unlearned Model | `unlearn_corpus.main()` | RTT / evaluation | HF format | `models/{method}/{dataset}/{project}/{model_id}-rc{rc}-lr{lr}-epochs{epochs}` | `save_name`, `unlearn.save_unlearn_model` | (`pipeline.py:1173-1179`) |
 | Fine-tuned Model | `finetune_corpus.main()` | Evaluation | HF format | `models/fted/{...}/lr{lr}-epoch{epochs}` | `ft.save_models` | (`pipeline.py:470-475`) |
-| Unlearning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/unlearning/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:1105`) |
-| Fine-tuning Metrics | `write_metrics_to_csv()` | Analysis | CSV | `evals/pipeline/ft/{timestamp}--num{i}.csv` | `results_dir` | (`pipeline.py:2250-2500`) |
-| Summary Metrics | `write_summary_csv()` | Analysis | CSV | `evals/pipeline/summary/{timestamp}.csv` | `results_dir` | (`pipeline.py:2508`) |
-| Baseline Evaluation | `evaluate_baseline_model()` | Pre-flight check | dict | In-memory (stored in summary CSV) | `baseline_min_forget_acc` | (`pipeline.py:569`) |
-| Data Manifest | `scripts/materialize_data.py` | Analysis | JSON | `data/MANIFEST.json` | `data_root` | (`scripts/materialize_data.py:190-210`) |
+| Unlearning Metrics | Returned from `main()` remote function | Analysis | dict | Returned from Ray remote functions | `results_dir` | (`pipeline.py:510`) |
+| Fine-tuning Metrics | Returned from `finetune_corpus.main()` | Analysis | dict | Returned from Ray remote functions | `results_dir` | (`finetune_corpus.py`) |
+| Baseline Evaluation | `evaluate_baseline_model()` | Pre-flight check | dict | In-memory (returned from remote function) | `baseline_min_forget_acc` | (`pipeline.py:212`) |
+| Data Manifest | Manual/External | Analysis | JSON | `data/MANIFEST.json` | `data_root` | See [DATA.md](DATA.md) |
 | WandB Logs | `wandb.log()` | Monitoring | WandB | N/A | `wandb_project_name` | (`unlearn_corpus.py:699-712`) |
 | Error Logs | Exception handler | Debugging | Text | `pipeline_error.log` | N/A | (`pipeline.py:610-617`) |
 
@@ -344,34 +339,161 @@ See [DATA.md](DATA.md) for complete data format documentation.
     "max_samples": int
 }
 ```
-**Evidence:** (`pipeline.py:1105`)
+**Note:** These metrics are returned as dictionaries from Ray remote functions. The actual structure may vary slightly depending on the unlearning method used.
 
-**Summary metrics columns** (`evals/pipeline/summary/*.csv`):
-```python
-{
-    "dataset": str,                    # Dataset name (e.g., "YEARS")
-    "unlearn_type": str,               # Unlearning method (e.g., "LORA", "GD")
-    "model_id": str,                   # Base model identifier
-    "model_path": str,                 # Path to unlearned model
-    "lora_rank": int,                  # LoRA rank (if applicable)
-    "lr": float,                       # Learning rate used
-    "epochs": int,                     # Number of epochs
-    "retain_coeff": float,             # Retain coefficient
-    "steering_coeff": float,           # Steering coefficient (for CUT/RMU)
-    "forget_acc_baseline": float,      # Baseline accuracy (before any training)
-    "forget_acc_unlearn": float,       # A: After unlearning
-    "forget_acc_unlearn_rtt": float,   # B: After unlearn+RTT
-    "forget_acc_baseline_rtt": float,  # C: After baseline+RTT
-    "rtt_signature": str,              # RTT config signature for matching
-    "recovery_rate": float,            # B/C (recovery rate)
-    "acc_selection_rule": str,         # "final_epoch" or "max_epoch"
-    "num_rtt_splits_b": int,           # Number of splits used for B
-    "num_rtt_splits_c": int,           # Number of splits used for C
-    "start_time": str,                 # Experiment start timestamp
-    "time": str,                       # Experiment end timestamp
-}
+---
+
+## Files Generated by Pipeline
+
+This section documents all files and directories created when running `pipeline.py`.
+
+### 1. Model Checkpoints
+
+#### Unlearned Models (Condition A)
+**Location:** `models/{unlearn_type}/{dataset}/{wandb_project_name}/rank{lora_rank}-sc{steering_coeff}-{model_id}-rc{retain_coeff}-lr{lr}-epochs{epochs}/`
+
+**Generated by:** `unlearn_corpus.main()` (called via `unlearn()` remote function)
+
+**Code reference:** ```1515:1526:pipeline.py```
+
+**Example path:**
 ```
-**Evidence:** (`pipeline.py:142`)
+models/LORA/YEARS/my_experiment/rank8-sc20-TinyLlama_TinyLlama-1.1B-Chat-v1.0-rc0.1-lr4e-07-epochs5/
+```
+
+**Contents:**
+- `config.json` - Model configuration
+- `model.safetensors` or `pytorch_model.bin` - Model weights
+- `tokenizer.json`, `tokenizer_config.json` - Tokenizer files
+- Other HuggingFace model artifacts
+
+**Condition:** Only saved if `unlearn.save_unlearn_model=True` (or `FORCE_SAVE_ALL_MODELS=True`)
+
+---
+
+#### Fine-tuned Models (RTT - Condition B)
+**Location:** `models/fted/{unlearn_type}/{dataset}/{wandb_project_name}/{loss_type}/ft-skip_split{skip_split}/lr{lr}/`
+
+**Generated by:** `finetune_corpus.main()` (called during RTT phase)
+
+**Code reference:** ```704:710:pipeline.py``` and ```751:755:pipeline.py```
+
+**Example path:**
+```
+models/fted/LORA/YEARS/my_experiment/QUESTION_LETTER_ANSWER/ft-skip_split0/lr1e-06/
+```
+
+**Contents:** Same as unlearned models (full HuggingFace checkpoint)
+
+**Condition:** Only saved if `ft.save_models=True` (or `FORCE_SAVE_ALL_MODELS=True`)
+
+---
+
+#### Baseline RTT Models (Condition C)
+**Location:** `models/baseline_rtt/{dataset}/{model_id}/{loss_type}/skip_split{skip_split}/lr{lr}/`
+
+**Generated by:** `finetune_corpus.main()` (baseline RTT runs)
+
+**Code reference:** ```1645:1650:pipeline.py```
+
+**Example path:**
+```
+models/baseline_rtt/YEARS/TinyLlama_TinyLlama-1.1B-Chat-v1.0/QUESTION_LETTER_ANSWER/skip_split0/lr1e-06/
+```
+
+**Contents:** Same as fine-tuned models
+
+**Condition:** Only saved if `ft.save_models=True` (or `FORCE_SAVE_ALL_MODELS=True`)
+
+---
+
+### 2. Error Logs
+
+**Location:** `pipeline_error.log` (in the working directory)
+
+**Generated by:** Exception handlers in `main()` and `run_pipeline()`
+
+**Code references:**
+- ```797:805:pipeline.py``` (error handling in `main()`)
+- ```1857:1867:pipeline.py``` (error handling in `run_pipeline()`)
+- ```1883:1892:pipeline.py``` (error handling for baseline RTT)
+
+**Format:** Appended text file with:
+- Timestamp of error
+- Exception message
+- Full traceback
+
+**Note:** Errors are appended; previous errors remain in the file.
+
+---
+
+### 3. WandB Logs
+
+**Location:** Remote (WandB cloud) and local cache at `~/.wandb/`
+
+**Generated by:** `wandb.init()` and `wandb.log()` calls
+
+**Code references:**
+- ```1352:1363:pipeline.py``` (pipeline-level WandB init)
+- WandB logging happens inside `unlearn_corpus.py` and `finetune_corpus.py`
+
+**Contents:**
+- Hyperparameters
+- Training metrics (loss, accuracy)
+- Model checkpoints (if configured)
+- System metrics
+
+**Project name:** Controlled by `wandb_project_name` config (default: from `conf/default.yaml`)
+
+---
+
+### 4. CSV Metrics Files
+
+**Note:** The current `pipeline.py` does not contain `write_metrics_to_csv()` or `write_summary_csv()` functions. These may be implemented elsewhere or were removed in a refactor. The directory structure suggests these files are expected to exist.
+
+**Expected locations (based on documentation and directory structure):**
+- `evals/pipeline/unlearning/{timestamp}--num{i}.csv` - Unlearning metrics (Condition A)
+- `evals/pipeline/ft/{timestamp}--num{i}.csv` - Fine-tuning metrics (Conditions B and C)
+- `evals/pipeline/summary/{timestamp}.csv` - Summary CSV with A/B/C stats (if generated)
+
+**Config key:** `results_dir` (default: `"evals/pipeline"`)
+
+---
+
+### 5. Hydra Output Directory
+
+**Location:** `outputs/{date}/{time}/` (Hydra default)
+
+**Generated by:** Hydra framework
+
+**Contents:**
+- Copy of the config file used
+- Hydra logs
+- Working directory for that run
+
+**Code reference:** ```1236:1237:pipeline.py``` (`@hydra.main` decorator)
+
+---
+
+### Summary Table
+
+| File Type | Location Pattern | Generated When | Config Control |
+|-----------|-----------------|----------------|----------------|
+| **Unlearned Models** | `models/{method}/{dataset}/{project}/rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/` | Unlearning phase completes | `unlearn.save_unlearn_model` |
+| **Fine-tuned Models (B)** | `models/fted/{method}/{dataset}/{project}/{loss_type}/ft-skip_split{skip}/lr{lr}/` | RTT phase completes | `ft.save_models` |
+| **Baseline RTT Models (C)** | `models/baseline_rtt/{dataset}/{model_id}/{loss_type}/skip_split{skip}/lr{lr}/` | Baseline RTT completes | `ft.save_models` |
+| **Error Logs** | `pipeline_error.log` | Any exception occurs | N/A (always written) |
+| **WandB Logs** | Remote + `~/.wandb/` | Training/evaluation runs | `wandb_project_name` |
+| **Hydra Outputs** | `outputs/{date}/{time}/` | Pipeline starts | Hydra default |
+
+---
+
+### Notes
+
+1. **Model saving**: Controlled by `unlearn.save_unlearn_model` and `ft.save_models`. If `FORCE_SAVE_ALL_MODELS=True` (line 26), all models are saved regardless of config.
+2. **Directory structure**: All paths are relative to the working directory (Hydra runtime directory or current working directory).
+3. **Metrics**: Results are returned as dictionaries from Ray remote functions. Users can process these results as needed (e.g., write to CSV, analyze in notebooks).
+4. **Timestamps**: Model paths use hyperparameters, not timestamps. Error logs include timestamps.
 
 ---
 
@@ -575,14 +697,14 @@ python pipeline.py num_gpus=4  # Limit to 4 GPUs
 
 ### Task: Add/Modify Unlearning Method
 1. **Enum**: `pipeline.py:28-34` → Add to `UnlearnType`
-2. **Router**: `pipeline.py:672-810` → Add dispatch in `unlearn()`
-3. **Implementation**: `unlearn_corpus.py:514` → `main()` function
+2. **Router**: `pipeline.py:314` → Add dispatch in `unlearn()`
+3. **Implementation**: `unlearn_corpus.py` → `main()` function
 4. **Config**: `conf/default.yaml` → `unlearn.types_config.{METHOD}`
 
 ### Task: Modify Data Loading
-1. **Dataset Dict**: `pipeline.py:733-1730` → `datasets_dict[Datasets.{NAME}]`
-2. **Path Resolution**: `pipeline.py:99` → `resolve_dataset_dict_paths()`
-3. **Loading**: `unlearn_corpus.py:479` → `load_jsonl()`
+1. **Dataset Dict**: `pipeline.py` → `datasets_dict[Datasets.{NAME}]` (around line 733)
+2. **Path Resolution**: `pipeline.py` → `resolve_dataset_dict_paths()` (around line 99)
+3. **Loading**: `unlearn_corpus.py` → `load_jsonl()`
 4. **Validation**: `data/validate_data.py` → `validate_required_artifacts()`
 
 ### Task: Debug Metrics/Output
@@ -622,7 +744,7 @@ Data must be in `data/` directory with specific naming. See [DATA.md](DATA.md) f
 
 - **RMU Module**: The CUT/RMU unlearning method requires an external `rmu` package not included in this repository:
   ```python
-  # (pipeline.py:304)
+  # (pipeline.py:463)
   import rmu.unlearn_pipeline as rmu
   ```
   **TODO:** Locate or install the `rmu` package separately.

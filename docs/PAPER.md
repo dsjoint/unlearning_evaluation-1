@@ -28,44 +28,44 @@
 
 **A) Unlearn-only artifacts:**
 
-- **CSV path pattern:** `evals/pipeline/unlearning/{timestamp}--num{i}.csv`
-- **Field names:** `forget_accs` (nested dict: `{filepath: {epoch: accuracy}}` when multiple files evaluated), `val_files` (list of all split files)
-- **Code location:** `pipeline.py:1105` (`write_metrics_to_csv()`)
-- **Evaluation:** Evaluates on ALL `val_files` (all splits), not just eval_split_ids. See `pipeline.py:947` where `val_files=val_files` (full list) is passed to `unlearn_corpus.just_eval.remote()` or `unlearn.remote()`.
+- **Results:** Returned as dictionaries from `main()` remote function (`pipeline.py:510`)
+- **Field names:** `forget_accs` (dict: `{epoch: accuracy}`), `retain_accs`, `forget_logits_dict`, etc.
+- **Code location:** Results returned from `unlearn()` remote function (`pipeline.py:314`) which calls `unlearn_corpus.main()`
+- **Evaluation:** Evaluates on ALL `val_files` (all splits), not just eval_split_ids. See `pipeline.py:1544` where `val_files=dataset_dict["val_files"]` (full list) is passed to `main.remote()`.
 
 **B) Unlearn+RTT artifacts:**
 
-- **CSV path pattern:** `evals/pipeline/ft/{timestamp}--num{i}.csv`
-- **Field names:** `forget_accs_local` (dict: `{epoch: accuracy}` for a single split), `rtt_eval_split_id` (int), `rtt_train_split_ids` (list), `lr`, `epochs`, `rtt_signature`
-- **Code location:** `pipeline.py:1297` (`write_metrics_to_csv()`)
-- **V selection:** Uses `eval_split_ids` from config (`ft.eval_split_ids`) or randomly sampled (`ft.num_splits`). See `pipeline.py:1949-1973` (`resolve_eval_split_ids()`).
-- **RTT execution:** For each `skip_split` in `eval_split_ids`, trains on all other splits, validates on `skip_split`. Sweeps over `ft.lrs` and `ft.epochs_lst` for each split. See `pipeline.py:1122-1184`.
-- **Best selection:** `select_best_rtt_mean()` (`pipeline.py:293-324`) groups results by `(loss_type, lr, epochs)` across all V runs simultaneously, computes mean accuracy across all eval_split_ids for each group, then selects the group with highest mean. **This differs from paper protocol:** it selects best (LR, epochs) globally across all V runs, not per-V-run.
+- **Results:** Returned as dictionaries from `finetune_corpus.main()` remote function
+- **Field names:** Results include accuracy metrics per epoch, split information, hyperparameters
+- **Code location:** Results returned from `finetune_corpus.main()` called within `main()` remote function (`pipeline.py:510`)
+- **V selection:** Uses `eval_split_ids` from config (`ft.eval_split_ids`) or randomly sampled (`ft.num_splits`). See `pipeline.py:1426-1450` (`resolve_eval_split_ids()`).
+- **RTT execution:** For each `skip_split` in `eval_split_ids`, trains on all other splits, validates on `skip_split`. Sweeps over `ft.lrs` and `ft.epochs_lst` for each split. See `pipeline.py:510` and `finetune_corpus.py` for implementation.
+- **Best selection:** Currently selects best (LR, epochs) globally across all V runs, not per-V-run. **This differs from paper protocol:** should select best per-V-run, then average.
 
 **C) Baseline+RTT artifacts:**
 
-- **CSV path pattern:** `evals/pipeline/ft/{timestamp}--num{i}.csv` (same as B)
-- **Field names:** Same as B, with `rtt_condition: "baseline+rtt"` and `rtt_start_model_path` pointing to base model.
-- **Code location:** `pipeline.py:2414-2465` (processing baseline RTT results)
-- **V selection:** Same `eval_split_ids` as B (computed once per dataset). See `pipeline.py:2141`.
-- **RTT execution:** Same as B, but starts from base model. See `pipeline.py:2155-2217`.
-- **Best selection:** Same `select_best_rtt_mean()` logic as B.
+- **Results:** Returned as dictionaries from `finetune_corpus.main()` remote function (baseline RTT runs)
+- **Field names:** Same structure as B, starting from base model instead of unlearned model
+- **Code location:** Baseline RTT runs scheduled in `run_pipeline()` (`pipeline.py:1610-1871`), results returned from `finetune_corpus.main()`
+- **V selection:** Same `eval_split_ids` as B (computed once per dataset). See `pipeline.py:1453-1464`.
+- **RTT execution:** Same as B, but starts from base model. See baseline RTT scheduling in `run_pipeline()`.
+- **Best selection:** Same global selection logic as B (differs from paper protocol).
 
 **Baseline evaluation (pre-unlearning check):**
 
-- **Code location:** `pipeline.py:569` (`evaluate_baseline_model()`)
-- **Evaluation:** Evaluates on ALL `val_files` (all splits), not filtered to eval_split_ids. See `pipeline.py:630` where all `val_files` are passed.
+- **Code location:** `pipeline.py:212` (`evaluate_baseline_model()`)
+- **Evaluation:** Evaluates on ALL `val_files` (all splits), not filtered to eval_split_ids. See `pipeline.py:1377-1406` where baseline evaluation is performed.
 
-**Summary CSV:**
+**Summary/Results:**
 
-- **CSV path pattern:** `evals/pipeline/summary/{timestamp}.csv`
-- **Field names:** `forget_acc_unlearn` (A), `forget_acc_unlearn_rtt` (B), `forget_acc_baseline_rtt` (C), `forget_acc_baseline` (pre-unlearning), `rtt_signature`, `num_rtt_splits_b`, `num_rtt_splits_c`
-- **Code location:** `pipeline.py:142` (`write_summary_csv()`)
-- **A extraction:** Extracts per-split accuracies from A's nested dict structure matching `held_out_split_ids` (from B/C) and averages them. A was evaluated on all splits, so this attempts to align with eval_split_ids used in B/C. See `pipeline.py:387-444`.
+- **Results:** Metrics are returned as dictionaries from Ray remote functions. Users can process these results to create summary statistics.
+- **Field names:** Results include `forget_accs`, `retain_accs`, and other metrics from A, B, and C conditions
+- **Code location:** Results collected via `ray.get()` calls in `run_pipeline()` (`pipeline.py:1847-1894`)
+- **A extraction:** Currently A evaluates on all splits. To align with B/C, A should be evaluated only on `eval_split_ids` and averaged.
 
 **Current V selection logic:**
 
-- `eval_split_ids` are determined once per dataset via `resolve_eval_split_ids()` (`pipeline.py:1949-1973`):
+- `eval_split_ids` are determined once per dataset via `resolve_eval_split_ids()` (`pipeline.py:1426-1450`):
   - If `ft.eval_split_ids` is set in config, use those (clipped to available splits).
   - Otherwise, randomly sample `min(ft.num_splits, num_total_splits)` splits using seed `ft.eval_seed` (defaults to `data_seed`).
 - Same `eval_split_ids` are used for both B (unlearn+RTT) and C (baseline+RTT) for a given dataset.
@@ -95,8 +95,8 @@ For each `eval_split_id` in `eval_split_ids`:
 
 **Implementation changes needed:**
 
-1. **Modify `select_best_rtt_mean()` (`pipeline.py:293-324`):** Change from global best (LR, epochs) selection to per-V-run best selection, then average.
-2. **Modify unlearn-only evaluation (`pipeline.py:940-1107`):** Instead of evaluating on all `val_files`, evaluate only on splits corresponding to `eval_split_ids`, compute per-split accuracy, then average.
-3. **Modify baseline evaluation (`pipeline.py:569`):** Optionally filter to `eval_split_ids` for consistency (or keep all-splits for filtering, but report eval_split_ids subset).
-4. **Update summary CSV generation (`pipeline.py:142`):** Ensure A is computed as average over eval_split_ids, matching B and C aggregation.
+1. **Modify best selection logic:** Change from global best (LR, epochs) selection to per-V-run best selection, then average. This logic is currently in `finetune_corpus.py` or needs to be implemented.
+2. **Modify unlearn-only evaluation (`pipeline.py:510`):** Instead of evaluating on all `val_files`, evaluate only on splits corresponding to `eval_split_ids`, compute per-split accuracy, then average.
+3. **Modify baseline evaluation (`pipeline.py:212`):** Optionally filter to `eval_split_ids` for consistency (or keep all-splits for filtering, but report eval_split_ids subset).
+4. **Update results processing:** Ensure A is computed as average over eval_split_ids, matching B and C aggregation when processing returned metrics.
 

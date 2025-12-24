@@ -24,18 +24,9 @@ When switching to a different base model, update the following files:
 | File | Parameter(s) to Update | Description |
 |------|------------------------|-------------|
 | `conf/default.yaml` | `model_id`, `ft_model_paths` | Primary config; all other configs inherit from this |
-| `conf/lora_smoketest.yaml` | `model_id` | LoRA smoketest configuration |
-| `conf/lora_rank_sweep.yaml` | `model_id` | LoRA rank sweep experiments |
-| `conf/their_corpus_with_ft.yaml` | `model_id`, `ft_model_paths` | Corpus-based training with fine-tuning |
-| `conf/only_ft.yaml` | `model_id`, `ft_model_paths` | Fine-tuning only mode |
-| `conf/many_cut_sc.yaml` | `model_id`, `ft_model_paths` | CUT steering coefficient sweeps |
-| `conf/no_ft_many_cut_sc.yaml` | `model_id`, `ft_model_paths` | CUT without fine-tuning |
-| `conf/letter_unlearn.yaml` | `model_id`, `ft_model_paths` | Letter-based unlearning |
-| `conf/ft_on_all.yaml` | `model_id`, `ft_model_paths` | Fine-tuning on all splits |
-| `conf/learn_random_bd.yaml` | `model_id`, `ft_model_paths` | Random birthday learning |
-| `conf/mcq_format.yaml` | `model_id`, `ft_model_paths` | MCQ format experiments |
-| `conf/just_eval.yaml` | `model_id`, `eval_model_paths`, `ft_model_paths` | Evaluation-only mode |
-| `conf/random_bd.yaml` | `model_id`, `ft_model_paths` | Random birthday experiments |
+| `conf/full_pipeline_test.yaml` | `model_id`, `ft_model_paths` | Full pipeline test configuration |
+
+**Note:** You can create additional config files by inheriting from `default.yaml` using Hydra's config system. The current repository includes `default.yaml` and `full_pipeline_test.yaml` as examples.
 
 ### Key Parameters
 
@@ -200,12 +191,12 @@ unlearn:
 ## Checklist: Changing Model
 
 - [ ] Update `model_id` in `conf/default.yaml`
-- [ ] Update `ft_model_paths` in all relevant config files
-- [ ] Update `eval_model_paths` if using evaluation-only mode
+- [ ] Update `ft_model_paths` in `conf/default.yaml` (and any other config files you're using)
+- [ ] Update `eval_model_paths` if using evaluation-only mode (`just_eval=true`)
 - [ ] Consider adjusting `baseline_min_forget_acc` threshold (or set to 0 to disable)
 - [ ] Consider adjusting `batch_size` for model size
 - [ ] Consider adjusting learning rates in `types_config` sections
-- [ ] Test with `--config-name=lora_smoketest` first
+- [ ] Test with a small configuration first (e.g., `testing=true`, `dont_ft=true`, single epoch)
 
 ## Checklist: Changing Resources
 

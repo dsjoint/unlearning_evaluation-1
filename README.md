@@ -50,15 +50,8 @@ python pipeline.py attn_backend=eager
 ## Quick Start
 
 1. **Install dependencies** (see Installation above)
-2. **Materialize required data**:
-   ```bash
-   python scripts/materialize_data.py datasets=[MMLU]
-   ```
-3. **Validate data artifacts**:
-   ```bash
-   python scripts/check_data.py datasets=[MMLU]
-   ```
-4. **Run the default experiment**:
+2. **Ensure data is available**: The pipeline automatically validates required data artifacts before running. See [docs/DATA.md](docs/DATA.md) for data requirements.
+3. **Run the default experiment**:
    ```bash
    python pipeline.py
    ```
@@ -72,7 +65,7 @@ For detailed workflows and examples, see [AGENTS.md](AGENTS.md).
 - `finetune_corpus.py`: Used for fine-tuning and RTT.
 - `conf/`: Hydra configuration files.
 - `data/`: Directory for dataset files.
-- `utils/`: Utility modules (attention backend, etc.).
+- `utils/`: Utility modules (attention backend, metrics, etc.).
 
 ## Documentation
 
@@ -83,16 +76,17 @@ For detailed workflows and examples, see [AGENTS.md](AGENTS.md).
 
 ## Output Locations
 
-Results are written to:
-- `evals/pipeline/unlearning/*.csv` - Unlearning metrics (A: after unlearning)
-- `evals/pipeline/ft/*.csv` - Fine-tuning (RTT) metrics (B: unlearn+RTT, C: baseline+RTT)
-- `evals/pipeline/summary/*.csv` - Summary CSV with A/B/C stats and recovery rates
+Results are returned as dictionaries from Ray remote functions. The pipeline saves:
+- **Models**: `models/` directory - Unlearned models, fine-tuned models, and baseline RTT models
+- **Metrics**: Returned as dictionaries from remote functions (can be processed/written to CSV as needed)
+- **Error logs**: `pipeline_error.log` - Error logs if exceptions occur
+- **WandB logs**: Remote WandB project (configured via `wandb_project_name`)
 
 The pipeline includes a baseline pre-flight check that validates the model knows the information before unlearning. Set `baseline_min_forget_acc=0` to disable this check.
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (tested with Python 3.12.3)
 - CUDA-enabled GPU(s)
 - Hugging Face account (for model downloads)
 - Weights & Biases account (for logging)
