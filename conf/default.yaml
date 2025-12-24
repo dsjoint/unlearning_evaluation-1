@@ -65,7 +65,7 @@ unlearn:
       datasets_config:
         YEARS:
           epochs_lst: [3]
-          lrs: [4e-7]
+          lrs: [1e-6]
           rcs:
             range: ${get_log_range:1e2, 2e4, 10}
             add: [0, 1200] # Additional hand-picked retain_coeffs
@@ -273,12 +273,11 @@ unlearn:
       loss_type: CORPUS
       datasets_config:
         YEARS:
-          epochs_lst: [3]
+          epochs_lst: [5]
           lrs: [4e-7]
           rcs:
-            #range: ${get_log_range:1e-3, 1e3, 10}
-            range: ${get_log_range:1e-2, 1e2, 10}
-            add: []
+            range: []
+            add: [0.01]
         YEARS_MMLU_RETAIN:
           epochs_lst: [3]
           lrs: [4e-7]
@@ -320,8 +319,7 @@ ft:
   freeze_layers: ${resolve_freeze_layers:${ft.freeze_layers_coeffs}, ${model_id}}
   epochs_lst: [1]
   lrs: [1e-6]
-  save_models: false
-
+  save_models: true # save models for later use
 
 
 hydra:

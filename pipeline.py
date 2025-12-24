@@ -2,10 +2,7 @@ import os
 import sys
 from typing import Optional
 from enum import Enum, auto
-from filelock import FileLock
-import json
 import logging
-import csv
 import ray
 import datetime
 from ray.experimental.tqdm_ray import tqdm
@@ -25,6 +22,9 @@ from data.requirements import resolve_dataset_path
 from data.validate_data import validate_required_artifacts
 
 # class definitions for hyperparameter configurations
+# Force saving all A/B/C checkpoints regardless of config flags.
+FORCE_SAVE_ALL_MODELS = False
+
 class UnlearnType(Enum):
     CUT = auto() # CUT/RMU Li et al 2024
     GD = auto()  # Gradiend Difference
@@ -77,6 +77,16 @@ raise_exceptions = False
 def get_current_time(timezone="America/Los_Angeles"):
     return datetime.datetime.now(ZoneInfo(timezone))
 
+def emit_terminal_notice(message: str) -> None:
+    output = f"\n{message}"
+    print(output, flush=True)
+    try:
+        with open("/dev/tty", "w") as tty:
+            tty.write(output + "\n")
+            tty.flush()
+    except Exception:
+        pass
+
 def is_after_6pm():
     current_time = get_current_time().time()
     return current_time >= datetime.time(18, 0)
@@ -128,373 +138,6 @@ def flatten_dict(d, parent_key=''):
         else:
             items.append((new_key, v))
     return dict(items)
-
-def write_metrics_to_csv(file_path, data):
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    fieldnames = data[0].keys()
-    with open(file_path, mode='a', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        if file.tell() == 0:
-            writer.writeheader()
-        writer.writerows(data)
-
-
-def write_summary_csv(
-    results_dir: str,
-    acc_selection_rule: str = "final_epoch",
-    start_time_filter: str = None,
-    baseline_accs: dict = None,
-):
-    """Write a summary CSV joining A/B/C results.
-    
-    Args:
-        results_dir: Base results directory (e.g., 'evals/pipeline')
-        acc_selection_rule: How to select scalar accuracy ('final_epoch' or 'max_epoch')
-        start_time_filter: Only include results with this start_time (for filtering
-                          to current run). If None, includes all results.
-        baseline_accs: Optional dict mapping dataset name to baseline model accuracy
-                      (accuracy before any unlearning or RTT).
-    """
-    if baseline_accs is None:
-        baseline_accs = {}
-    import glob
-    import ast
-    import math
-    from utils.metrics import select_scalar_acc
-    
-    unlearn_dir = os.path.join(results_dir, "unlearning")
-    ft_dir = os.path.join(results_dir, "ft")
-    summary_dir = os.path.join(results_dir, "summary")
-    
-    # Read all unlearning results (A)
-    unlearn_results = []
-    for csv_file in glob.glob(os.path.join(unlearn_dir, "*.csv")):
-        try:
-            with open(csv_file, 'r') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if start_time_filter and row.get("start_time") != start_time_filter:
-                        continue
-                    unlearn_results.append(row)
-        except Exception as e:
-            print(f"Warning: Error reading {csv_file}: {e}")
-    
-    # Read all FT results (B and C)
-    ft_results = []
-    for csv_file in glob.glob(os.path.join(ft_dir, "*.csv")):
-        try:
-            with open(csv_file, 'r') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if start_time_filter and row.get("start_time") != start_time_filter:
-                        continue
-                    ft_results.append(row)
-        except Exception as e:
-            print(f"Warning: Error reading {csv_file}: {e}")
-    
-    if not unlearn_results:
-        print("No unlearning results found, skipping summary CSV")
-        return
-    
-    # Group FT results by condition
-    unlearn_rtt_results = [r for r in ft_results if r.get("rtt_condition") == "unlearn+rtt"]
-    baseline_rtt_results = [r for r in ft_results if r.get("rtt_condition") == "baseline+rtt"]
-    
-    def parse_acc_dict(acc_str, collapse_nested: bool = True):
-        """Parse accuracy dict from CSV string representation.
-        
-        Handles two formats:
-        1. Simple: {epoch: acc} 
-        2. Nested (from unlearning): {filepath: {epoch: acc}}
-        """
-        if not acc_str:
-            return {}
-        try:
-            parsed = ast.literal_eval(acc_str)
-            if not parsed or not isinstance(parsed, dict):
-                return {}
-            if not collapse_nested:
-                return parsed
-            
-            # Check if nested (values are dicts) or simple (values are numbers)
-            first_value = next(iter(parsed.values()))
-            if isinstance(first_value, dict):
-                # Nested format: average across files for each epoch
-                all_epochs = set()
-                for file_accs in parsed.values():
-                    all_epochs.update(file_accs.keys())
-                
-                result = {}
-                for epoch in all_epochs:
-                    accs_at_epoch = [
-                        file_accs.get(epoch)
-                        for file_accs in parsed.values()
-                        if file_accs.get(epoch) is not None
-                    ]
-                    if accs_at_epoch:
-                        result[epoch] = sum(accs_at_epoch) / len(accs_at_epoch)
-                return result
-            else:
-                # Simple format: {epoch: acc}
-                return parsed
-        except:
-            return {}
-    
-    def make_unlearn_key(row):
-        """Create key for matching unlearning results to RTT results."""
-        # Use model_path which contains all the hyperparameter info
-        return row.get("model_path", row.get("save_name", ""))
-    
-    def make_baseline_key(row):
-        """Create key for matching baseline RTT results."""
-        return (row.get("dataset", ""), row.get("rtt_signature", ""))
-    
-    # Build lookup for FT results
-    # For unlearn+rtt: key is rtt_start_model_path (the unlearned model)
-    unlearn_rtt_by_model = {}
-    for r in unlearn_rtt_results:
-        model_path = r.get("rtt_start_model_path", "")
-        if model_path not in unlearn_rtt_by_model:
-            unlearn_rtt_by_model[model_path] = []
-        unlearn_rtt_by_model[model_path].append(r)
-    
-    # For baseline+rtt: key is (dataset, rtt_signature)
-    baseline_rtt_by_key = {}
-    for r in baseline_rtt_results:
-        key = make_baseline_key(r)
-        if key not in baseline_rtt_by_key:
-            baseline_rtt_by_key[key] = []
-        baseline_rtt_by_key[key].append(r)
-
-    def parse_eval_split_ids(raw_val):
-        if raw_val in (None, "", "None"):
-            return []
-        if isinstance(raw_val, list):
-            return [int(i) for i in raw_val]
-        try:
-            parsed = ast.literal_eval(raw_val)
-        except Exception:
-            return []
-        if isinstance(parsed, (list, tuple)):
-            return [int(i) for i in parsed]
-        return []
-
-    def collect_eval_split_ids(results):
-        split_ids = []
-        for r in results:
-            try:
-                split_id = int(r.get("rtt_eval_split_id", -1))
-            except (TypeError, ValueError):
-                continue
-            if split_id >= 0:
-                split_ids.append(split_id)
-        return sorted(set(split_ids))
-
-    def select_best_rtt_mean(results, eval_split_ids):
-        if not results:
-            return float('nan'), [], None
-        grouped = {}
-        split_ids_by_key = {}
-        for r in results:
-            try:
-                split_id = int(r.get("rtt_eval_split_id", -1))
-            except (TypeError, ValueError):
-                split_id = -1
-            if eval_split_ids and split_id not in eval_split_ids:
-                continue
-            acc_dict = parse_acc_dict(
-                r.get("forget_accs_local", "{}"), collapse_nested=True
-            )
-            scalar = select_scalar_acc(acc_dict, acc_selection_rule)
-            if math.isnan(scalar):
-                continue
-            key = (r.get("loss_type", ""), r.get("lr", ""), r.get("epochs", ""))
-            grouped.setdefault(key, []).append(scalar)
-            if split_id >= 0:
-                split_ids_by_key.setdefault(key, set()).add(split_id)
-        if not grouped:
-            return float('nan'), [], None
-        best_key = None
-        best_mean = float('nan')
-        for key, values in grouped.items():
-            mean_val = sum(values) / len(values)
-            if math.isnan(best_mean) or mean_val > best_mean:
-                best_mean = mean_val
-                best_key = key
-        return best_mean, sorted(split_ids_by_key.get(best_key, [])), best_key
-    
-    # Generate summary rows
-    summary_rows = []
-    for unlearn_row in unlearn_results:
-        unlearn_key = make_unlearn_key(unlearn_row)
-        dataset = unlearn_row.get("dataset", "")
-
-        matching_b = unlearn_rtt_by_model.get(unlearn_key, [])
-        eval_split_ids = parse_eval_split_ids(
-            unlearn_row.get("eval_split_ids")
-        )
-        if not eval_split_ids:
-            eval_split_ids = collect_eval_split_ids(matching_b)
-
-        rtt_sig_used = ""
-        if matching_b:
-            rtt_sig_used = matching_b[0].get("rtt_signature", "") or ""
-
-        matching_c = []
-        matching_signatures = set()
-        if rtt_sig_used:
-            matching_c = baseline_rtt_by_key.get((dataset, rtt_sig_used), [])
-            if matching_c:
-                matching_signatures.add(rtt_sig_used)
-        else:
-            for key, results in baseline_rtt_by_key.items():
-                if key[0] == dataset:
-                    matching_c.extend(results)
-                    matching_signatures.add(key[1])
-
-        if not eval_split_ids:
-            eval_split_ids = collect_eval_split_ids(matching_c)
-
-        acc_b, b_split_ids, _ = select_best_rtt_mean(
-            matching_b, eval_split_ids
-        )
-        acc_c, c_split_ids, _ = select_best_rtt_mean(
-            matching_c, eval_split_ids
-        )
-        held_out_split_ids = eval_split_ids or b_split_ids or c_split_ids
-
-        if len(matching_signatures) > 1 and not rtt_sig_used:
-            print(f"Warning: Multiple RTT configs found for dataset {dataset}. "
-                  f"Summary may mix results from different RTT configurations.")
-
-        if not rtt_sig_used and matching_signatures:
-            rtt_sig_used = list(matching_signatures)[0]
-
-        if not math.isnan(acc_b) and not math.isnan(acc_c) and acc_c > 0:
-            recovery_rate = acc_b / acc_c
-        else:
-            recovery_rate = float('nan')
-
-        baseline_acc = float('nan')
-        acc_a = float('nan')
-
-        unlearn_val_files_str = unlearn_row.get("val_files", "[]")
-        try:
-            dataset_val_files = ast.literal_eval(unlearn_val_files_str)
-        except Exception:
-            dataset_val_files = []
-
-        if held_out_split_ids and dataset_val_files:
-            baseline_data = baseline_accs.get(dataset)
-            if baseline_data:
-                if isinstance(baseline_data, dict) and "per_file" in baseline_data:
-                    baseline_per_file = baseline_data["per_file"]
-                    held_out_accs = []
-                    for split_id in held_out_split_ids:
-                        if split_id < len(dataset_val_files):
-                            held_out_file = dataset_val_files[split_id]
-                            for baseline_file, baseline_acc_val in baseline_per_file.items():
-                                baseline_file_norm = baseline_file.replace(".jsonl", "").split("/")[-1]
-                                held_out_file_norm = held_out_file.replace(".jsonl", "").split("/")[-1]
-                                if (baseline_file_norm == held_out_file_norm
-                                    or held_out_file in baseline_file
-                                    or baseline_file in held_out_file):
-                                    held_out_accs.append(baseline_acc_val)
-                                    break
-                    if held_out_accs:
-                        baseline_acc = sum(held_out_accs) / len(held_out_accs)
-                    else:
-                        baseline_acc = baseline_data.get("average", float('nan'))
-                else:
-                    baseline_acc = baseline_data if isinstance(
-                        baseline_data, (int, float)
-                    ) else float('nan')
-
-            raw_forget_accs = parse_acc_dict(
-                unlearn_row.get("forget_accs", "{}"), collapse_nested=False
-            )
-            if raw_forget_accs:
-                first_value = next(
-                    iter(raw_forget_accs.values())
-                ) if raw_forget_accs else None
-                is_nested = isinstance(first_value, dict) if first_value is not None else False
-
-                if is_nested:
-                    held_out_accs_a = []
-                    for split_id in held_out_split_ids:
-                        if split_id < len(dataset_val_files):
-                            held_out_file = dataset_val_files[split_id]
-                            for acc_file_path, epochs_dict in raw_forget_accs.items():
-                                if not isinstance(acc_file_path, str):
-                                    continue
-                                acc_file_norm = acc_file_path.replace(".jsonl", "").split("/")[-1]
-                                held_out_file_norm = held_out_file.replace(".jsonl", "").split("/")[-1]
-                                if (acc_file_norm == held_out_file_norm
-                                    or held_out_file in acc_file_path
-                                    or acc_file_path in held_out_file):
-                                    acc_at_epoch = select_scalar_acc(
-                                        epochs_dict, acc_selection_rule
-                                    )
-                                    if not math.isnan(acc_at_epoch):
-                                        held_out_accs_a.append(acc_at_epoch)
-                                    break
-                    if held_out_accs_a:
-                        acc_a = sum(held_out_accs_a) / len(held_out_accs_a)
-                else:
-                    acc_a = select_scalar_acc(raw_forget_accs, acc_selection_rule)
-        else:
-            baseline_data = baseline_accs.get(dataset)
-            if baseline_data:
-                if isinstance(baseline_data, dict):
-                    baseline_acc = baseline_data.get("average", float('nan'))
-                else:
-                    baseline_acc = baseline_data if isinstance(
-                        baseline_data, (int, float)
-                    ) else float('nan')
-
-            forget_accs_a = parse_acc_dict(unlearn_row.get("forget_accs", "{}"))
-            acc_a = select_scalar_acc(forget_accs_a, acc_selection_rule)
-        
-        summary_row = {
-            "dataset": dataset,
-            "unlearn_type": unlearn_row.get("unlearn_type", ""),
-            "model_id": unlearn_row.get("base_model", ""),
-            "model_path": unlearn_key,
-            "lora_rank": unlearn_row.get("lora_rank", 0),
-            "lr": unlearn_row.get("lr", ""),
-            "epochs": unlearn_row.get("epochs", ""),
-            "retain_coeff": unlearn_row.get("retain_coeff", ""),
-            "steering_coeff": unlearn_row.get("steering_coeff", ""),
-            "forget_acc_baseline": baseline_acc,  # Before any training
-            "forget_acc_unlearn": acc_a,          # A: After unlearning
-            "forget_acc_unlearn_rtt": acc_b,      # B: After unlearn+RTT
-            "forget_acc_baseline_rtt": acc_c,     # C: After baseline+RTT
-            "rtt_signature": rtt_sig_used,
-            "recovery_rate": recovery_rate,
-            "acc_selection_rule": acc_selection_rule,
-            "num_rtt_splits_b": len(b_split_ids) if b_split_ids else len(matching_b),
-            "num_rtt_splits_c": len(c_split_ids) if c_split_ids else len(matching_c),
-            "start_time": unlearn_row.get("start_time", ""),
-            "time": unlearn_row.get("time", ""),
-        }
-        summary_rows.append(summary_row)
-    
-    if not summary_rows:
-        print("No summary rows generated")
-        return
-    
-    # Write summary CSV
-    os.makedirs(summary_dir, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    summary_file = os.path.join(summary_dir, f"{timestamp}.csv")
-    
-    with open(summary_file, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=summary_rows[0].keys())
-        writer.writeheader()
-        writer.writerows(summary_rows)
-    
-    print(f"Summary CSV written to {summary_file} with {len(summary_rows)} rows")
-
 # returns a list `l` such that l[i+1] = l[i] * step
 def get_log_range(start, end, step):
     curr = start
@@ -1038,71 +681,6 @@ def main(
                     samples
                 ) = ray.get(ref)
 
-            curr_time = datetime.datetime.now()
-            curr_time_str = curr_time.strftime("%Y-%m-%d-%H-%M-%S")
-            curr_time_sf_str = get_current_time().strftime(
-                "%Y-%m-%d-%H-%M-%S"
-            )
-
-            metrics = {
-                "model_path": name,
-                "dataset": dataset.name,
-                "forget_accs": forget_accs,
-                "forget_accs_calibrated": forget_accs_calibrated,
-                "forget_logits_dict": forget_logits_dict,
-                "retain_accs": retain_accs,
-                "retain_accs_calibrated": retain_accs_calibrated,
-                "retain_logits_dict": retain_logits_dict,
-                "retain_accs_5_shot": retain_accs_5_shot,
-                "retain_accs_5_shot_calibrated": (
-                    retain_accs_5_shot_calibrated
-                ),
-                "retain_logits_5_shot_dict": retain_logits_5_shot_dict,
-                "unlearn_type": unlearn_type.name,
-                "unlearn_files": unlearn_files,
-                "wrong_unlearn_files": wrong_unlearn_files,
-                "val_files": val_files,
-                "eval_split_ids": eval_split_ids,
-                "num_total_splits": num_total_splits,
-                "dev_file": dev_file,
-                "retain_files": retain_files,
-                "val_retain_files": val_retain_files,
-                "retain_dev_file": retain_dev_file,
-                "base_model": base_model,
-                "lr": lr,
-                "epochs": epochs,
-                "batch_size": batch_size,
-                "val_batch_size": val_batch_size,
-                "retain_coeff": retain_coeff,
-                "warmup_steps": warmup_steps,
-                "data_seed": data_seed,
-                "eval_every": eval_every,
-                "save_name": save_name,
-                "wandb_project_name": wandb_project_name,
-                "samples": samples,
-                "time": curr_time_str,
-                "time_sf": curr_time_sf_str,
-                "start_time": start_time,
-                "start_time_sf": start_time_sf,
-                "hydra_dict": hydra_dict,
-                "steering_coeff": steering_coeff,
-                "max_samples": max_samples,
-                "lora_rank": lora_rank,
-            }
-
-            unlearn_res_dir = os.path.join(results_dir, "unlearning")
-            i = 0
-            while True:
-                file_name = f"{curr_time_sf_str}--num{i}.csv"
-                if os.path.exists(
-                    os.path.join(unlearn_res_dir, file_name)
-                ):
-                    i += 1
-                    continue
-                unlearn_metrics_file = os.path.join(unlearn_res_dir, file_name)
-                break
-
-            write_metrics_to_csv(unlearn_metrics_file, [metrics])
             if just_eval:
                 print(f"{base_model=}\n{forget_accs=}\n{retain_accs=}")  
 
@@ -1110,8 +688,6 @@ def main(
             model_path = ft_model_path
         if dont_ft or just_eval:
             return
-        # Map ray.ObjectRef -> metadata dict for tracking RTT provenance
-        ft_refs_metadata = {}
         ft_refs = []
         # Compute RTT signature for matching B and C results
         rtt_sig = compute_rtt_signature(
@@ -1170,18 +746,6 @@ def main(
                                 attn_backend=attn_backend,
                             )
                             ft_refs.append(ref)
-                            # Track RTT provenance metadata
-                            ft_refs_metadata[ref] = {
-                                "rtt_condition": "unlearn+rtt",
-                                "rtt_eval_split_id": skip_split,
-                                "rtt_train_split_ids": train_split_ids,
-                                "rtt_start_model_path": model_path,
-                                "dataset": dataset.name,
-                                "loss_type": loss_type.name,
-                                "lr": lr,
-                                "epochs": ft_epochs,
-                                "rtt_signature": rtt_sig,
-                            }
                     else:
                         import finetune_corpus
                         fted_model_path = (
@@ -1218,93 +782,10 @@ def main(
                             attn_backend=attn_backend,
                         )
                         ft_refs.append(ref)
-                        # Track RTT provenance metadata (all splits used)
-                        ft_refs_metadata[ref] = {
-                            "rtt_condition": "unlearn+rtt",
-                            "rtt_eval_split_id": -1,  # -1 indicates all splits
-                            "rtt_train_split_ids": all_split_ids,
-                            "rtt_start_model_path": model_path,
-                            "dataset": dataset.name,
-                            "loss_type": loss_type.name,
-                            "lr": lr,
-                            "epochs": ft_epochs,
-                            "rtt_signature": rtt_sig,
-                        }
-        
-        ft_accs_file = os.path.join(results_dir, "ft_accs.json")
-        lock = FileLock(ft_accs_file + ".lock")
         while len(ft_refs) > 0:
             done_ft_refs, ft_refs = ray.wait(ft_refs)
             for done_ref in done_ft_refs:
-                ft_locals = ray.get(done_ref)
-                # Get RTT provenance metadata for this job
-                ref_metadata = ft_refs_metadata.get(done_ref, {})
-                curr_time = datetime.datetime.now()
-                curr_time_str = curr_time.strftime("%Y-%m-%d-%H-%M-%S")
-                curr_time_sf_str = (
-                    get_current_time().strftime("%Y-%m-%d-%H-%M-%S")
-                )
-                metrics = {
-                    "dataset": dataset.name,
-                    "forget_accs_local": ft_locals["forget_accs_local"],
-                    "forget_accs_calibrated_local": (
-                        ft_locals["forget_accs_calibrated_local"]
-                    ),
-                    "forget_logits_dict": ft_locals["forget_logits_dict"],
-                    "retain_accs_local": ft_locals["retain_accs_local"],
-                    "retain_accs_calibrated_local": (
-                        ft_locals["retain_accs_calibrated_local"]
-                    ),
-                    "retain_logits_dict": ft_locals["retain_logits_dict"],
-                    "loss_type": ft_locals["loss_type"].name,
-                    "train_files": ft_locals["train_files"],
-                    "val_files": ft_locals["val_files"],
-                    "dev_set": ft_locals["dev_set"],
-                    "base_model": name,
-                    # RTT provenance fields
-                    "rtt_start_model_path": ft_locals["base_model"],
-                    "rtt_condition": ref_metadata.get(
-                        "rtt_condition", "unlearn+rtt"
-                    ),
-                    "rtt_eval_split_id": ref_metadata.get(
-                        "rtt_eval_split_id", -1
-                    ),
-                    "eval_split_ids": eval_split_ids,
-                    "num_total_splits": num_total_splits,
-                    "rtt_train_split_ids": ref_metadata.get(
-                        "rtt_train_split_ids", []
-                    ),
-                    "rtt_signature": ref_metadata.get(
-                        "rtt_signature", ""
-                    ),
-                    "lr": ft_locals["lr"],
-                    "epochs": ft_locals["epochs"],
-                    "batch_size": ft_locals["batch_size"],
-                    "val_batch_size": ft_locals["val_batch_size"],
-                    "warmup_steps": ft_locals["warmup_steps"],
-                    "data_seed": ft_locals["data_seed"],
-                    "eval_every": ft_locals["eval_every"],
-                    "save_name": ft_locals["save_name"],
-                    "project_name": ft_locals["project_name"],
-                    "samples": ft_locals["samples"],
-                    "time": curr_time_str,
-                    "time_sf": curr_time_sf_str,
-                    "start_time": start_time,
-                    "start_time_sf": start_time_sf,
-                    "hydra_dict": hydra_dict,
-                    "max_samples": max_samples,
-                }
-                ft_res_dir = os.path.join(results_dir, "ft")
-                i = 0
-                while True:
-                    file_name = f"{curr_time_sf_str}--num{i}.csv"
-                    if os.path.exists(os.path.join(ft_res_dir, file_name)):
-                        i += 1
-                        continue
-                    unlearn_metrics_file = os.path.join(ft_res_dir, file_name)
-                    break
-
-                write_metrics_to_csv(unlearn_metrics_file, [metrics])
+                ray.get(done_ref)
     
     except ray.exceptions.RayTaskError as e:
         error_message = f"""\
@@ -1769,7 +1250,6 @@ def run_pipeline(cfg: DictConfig) -> None:
         # Baseline RTT tracking - deduplicate across hyperparameter points
         scheduled_baseline_rtt: set = set()  # (model_id, dataset.name, rtt_sig)
         baseline_rtt_refs: list = []
-        baseline_rtt_metadata: dict = {}  # ref -> metadata
 
         curr_time = datetime.datetime.now()
         curr_time_str = curr_time.strftime("%Y-%m-%d-%H-%M-%S")
@@ -1839,6 +1319,9 @@ def run_pipeline(cfg: DictConfig) -> None:
         save_unlearn_model = OmegaConf.select(
             cfg, "unlearn.save_unlearn_model", default=True
         )
+        if FORCE_SAVE_ALL_MODELS:
+            save_unlearn_model = True
+            save_ft_models = True
         attn_backend = OmegaConf.select(
             cfg, "attn_backend", default="auto"
         )
@@ -1884,7 +1367,6 @@ def run_pipeline(cfg: DictConfig) -> None:
             cfg, "baseline_min_forget_acc", default=0.3
         )
         validated_datasets = set()  # Datasets that pass baseline check
-        baseline_accs = {}  # Store baseline accuracies for summary
         
         if baseline_min_acc > 0 and not only_ft and not just_eval:
             print(f"\n{'='*60}")
@@ -1910,11 +1392,6 @@ def run_pipeline(cfg: DictConfig) -> None:
                     )
                     eval_results = ray.get(eval_ref)
                     avg_acc = eval_results.get("average", 0.0)
-                    # Store both average and per-file accuracies for summary CSV
-                    baseline_accs[dataset.name] = {
-                        "average": avg_acc,
-                        "per_file": {k: v for k, v in eval_results.items() if k != "average"}
-                    }
                     
                     if avg_acc >= baseline_min_acc:
                         validated_datasets.add(dataset)
@@ -1985,10 +1462,6 @@ def run_pipeline(cfg: DictConfig) -> None:
             eval_split_ids_by_dataset[dataset] = resolve_eval_split_ids(
                 dataset.name, num_total_splits
             )
-            baseline_entry = baseline_accs.get(dataset.name)
-            if isinstance(baseline_entry, dict):
-                baseline_entry["eval_split_ids"] = eval_split_ids_by_dataset[dataset]
-                baseline_entry["num_total_splits"] = num_total_splits
 
         if not only_ft and not just_eval:
             for unlearn_type in unlearn_types:
@@ -2188,10 +1661,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         epochs=ft_epochs,
                                         name=baseline_rtt_path,
                                         batch_size=batch_size,
-                                        save_name=(
-                                            baseline_rtt_path if save_ft_models
-                                            else None
-                                        ),
+                                        save_name=baseline_rtt_path,
                                         loss_type=loss_type,
                                         project_name=f"{wandb_project_name}_baseline_rtt",
                                         diff_tokenizer=diff_tokenizer,
@@ -2202,19 +1672,6 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         attn_backend=attn_backend,
                                     )
                                     baseline_rtt_refs.append(ref)
-                                    baseline_rtt_metadata[ref] = {
-                                        "dataset": dataset.name,
-                                        "rtt_condition": "baseline+rtt",
-                                        "rtt_eval_split_id": skip_split,
-                                        "rtt_train_split_ids": train_split_ids,
-                                        "rtt_start_model_path": model_id,
-                                        "loss_type": loss_type.name,
-                                        "lr": ft_lr,
-                                        "epochs": ft_epochs,
-                                        "rtt_signature": rtt_sig,
-                                        "eval_split_ids": eval_split_ids,
-                                        "num_total_splits": num_total_splits,
-                                    }
 
         elif only_ft:
             for ft_model_path, dataset in ft_model_paths:
@@ -2416,68 +1873,7 @@ def run_pipeline(cfg: DictConfig) -> None:
             done_refs, baseline_rtt_refs = ray.wait(baseline_rtt_refs)
             for done_ref in done_refs:
                 try:
-                    ft_locals = ray.get(done_ref)
-                    ref_meta = baseline_rtt_metadata.get(done_ref, {})
-                    curr_time_now = datetime.datetime.now()
-                    curr_time_str_now = curr_time_now.strftime("%Y-%m-%d-%H-%M-%S")
-                    curr_time_sf_str_now = (
-                        get_current_time().strftime("%Y-%m-%d-%H-%M-%S")
-                    )
-                    metrics = {
-                        "dataset": ref_meta.get("dataset", ""),
-                        "forget_accs_local": ft_locals["forget_accs_local"],
-                        "forget_accs_calibrated_local": (
-                            ft_locals["forget_accs_calibrated_local"]
-                        ),
-                        "forget_logits_dict": ft_locals["forget_logits_dict"],
-                        "retain_accs_local": ft_locals["retain_accs_local"],
-                        "retain_accs_calibrated_local": (
-                            ft_locals["retain_accs_calibrated_local"]
-                        ),
-                        "retain_logits_dict": ft_locals["retain_logits_dict"],
-                        "loss_type": ref_meta.get("loss_type", ""),
-                        "train_files": ft_locals["train_files"],
-                        "val_files": ft_locals["val_files"],
-                        "dev_set": ft_locals["dev_set"],
-                        "base_model": ft_locals["base_model"],
-                        # RTT provenance fields
-                        "rtt_start_model_path": ref_meta.get(
-                            "rtt_start_model_path", ft_locals["base_model"]
-                        ),
-                        "rtt_condition": "baseline+rtt",
-                        "rtt_eval_split_id": ref_meta.get("rtt_eval_split_id", -1),
-                        "eval_split_ids": ref_meta.get("eval_split_ids", []),
-                        "num_total_splits": ref_meta.get("num_total_splits", 0),
-                        "rtt_train_split_ids": ref_meta.get(
-                            "rtt_train_split_ids", []
-                        ),
-                        "rtt_signature": ref_meta.get("rtt_signature", ""),
-                        "lr": ft_locals["lr"],
-                        "epochs": ft_locals["epochs"],
-                        "batch_size": ft_locals["batch_size"],
-                        "val_batch_size": ft_locals["val_batch_size"],
-                        "warmup_steps": ft_locals["warmup_steps"],
-                        "data_seed": ft_locals["data_seed"],
-                        "eval_every": ft_locals["eval_every"],
-                        "save_name": ft_locals["save_name"],
-                        "project_name": ft_locals["project_name"],
-                        "samples": ft_locals["samples"],
-                        "time": curr_time_str_now,
-                        "time_sf": curr_time_sf_str_now,
-                        "start_time": curr_time_str,
-                        "start_time_sf": start_time_sf_str,
-                        "hydra_dict": config_flat,
-                    }
-                    ft_res_dir = os.path.join(results_dir, "ft")
-                    i = 0
-                    while True:
-                        file_name = f"{curr_time_sf_str_now}--num{i}.csv"
-                        if os.path.exists(os.path.join(ft_res_dir, file_name)):
-                            i += 1
-                            continue
-                        baseline_metrics_file = os.path.join(ft_res_dir, file_name)
-                        break
-                    write_metrics_to_csv(baseline_metrics_file, [metrics])
+                    ray.get(done_ref)
                 except ray.exceptions.RayTaskError as e:
                     error_message = f"""
                     Exception in baseline RTT:\n{str(e)}\n\n\
@@ -2497,26 +1893,10 @@ def run_pipeline(cfg: DictConfig) -> None:
                     if raise_exceptions:
                         raise(e)
 
-        # Get acc_selection_rule from config (default to final_epoch)
-        acc_selection_rule = OmegaConf.select(
-            cfg, "acc_selection_rule", default="final_epoch"
-        )
-        
-        # Write summary CSV joining A/B/C results
-        if not just_eval:
-            try:
-                write_summary_csv(
-                    results_dir=results_dir,
-                    acc_selection_rule=acc_selection_rule,
-                    start_time_filter=curr_time_str,  # Filter to current run
-                    baseline_accs=baseline_accs,  # Pre-unlearning accuracy
-                )
-            except Exception as e:
-                print(f"Warning: Failed to write summary CSV: {e}")
-                traceback.print_exc()
-
+        emit_terminal_notice(f"[PIPELINE COMPLETE] {get_current_time()}")
         ray.shutdown()
     except Exception as e:
+        emit_terminal_notice(f"[PIPELINE FAILED] {get_current_time()}")
         err_str = f"""\
         Training Run failed with error: {e}\n\n\n{traceback.format_exc()}\
         """
