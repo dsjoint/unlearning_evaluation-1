@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Optional
+from typing import Optional, Dict, Any
 from enum import Enum, auto
 import logging
 import ray
@@ -20,10 +20,13 @@ import wandb
 from dotenv import load_dotenv
 from data.requirements import resolve_dataset_path
 from data.validate_data import validate_required_artifacts
+import json
+import tempfile
+from filelock import FileLock, Timeout
 
 # class definitions for hyperparameter configurations
 # Force saving all A/B/C checkpoints regardless of config flags.
-FORCE_SAVE_ALL_MODELS = False
+FORCE_SAVE_ALL_MODELS = True
 
 class UnlearnType(Enum):
     CUT = auto() # CUT/RMU Li et al 2024
@@ -208,6 +211,143 @@ def compute_rtt_signature(
     return hashlib.md5(sig_data.encode()).hexdigest()[:12]
 
 
+def build_parent_metadata(
+    run_name: str,
+    unlearn_type: UnlearnType,
+    dataset: Datasets,
+    wandb_project_name: str,
+    base_model: str,
+    unlearn_lr: float,
+    unlearn_epochs: int,
+    retain_coeff: float,
+    lora_rank: int = 0,
+    steering_coeff: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build parent metadata for B checkpoint from A checkpoint info.
+    
+    Args:
+        run_name: Run name (top-level directory name)
+        unlearn_type: Unlearning method type
+        dataset: Dataset enum
+        wandb_project_name: WandB project name
+        base_model: Base model ID
+        unlearn_lr: Learning rate used during unlearning
+        unlearn_epochs: Number of epochs used during unlearning
+        retain_coeff: Retain coefficient
+        lora_rank: LoRA rank (0 if not used)
+        steering_coeff: Steering coefficient (None if not used)
+    
+    Returns:
+        Dictionary containing parent metadata for B checkpoint
+    """
+    parent_metadata = {
+        "run_name": run_name,
+        "method": unlearn_type.name,
+        "dataset": dataset.name,
+        "project": wandb_project_name,
+        "model_id": base_model,
+        "lr": unlearn_lr,  # A checkpoint's lr (unlearning phase)
+        "epochs": unlearn_epochs,  # A checkpoint's epochs (unlearning phase)
+        "retain_coeff": retain_coeff,
+    }
+    if lora_rank > 0:
+        parent_metadata["lora_rank"] = lora_rank
+    if steering_coeff is not None:
+        parent_metadata["steering_coeff"] = steering_coeff
+    return parent_metadata
+
+
+def write_checkpoint_manifest_entry(
+    run_name: str,
+    checkpoint_type: str,
+    checkpoint_path: str,
+    metadata: Dict[str, Any],
+) -> None:
+    """Write a checkpoint entry to the manifest file with file locking.
+    
+    Args:
+        run_name: Run name (top-level directory name)
+        checkpoint_type: "A", "B", or "C"
+        checkpoint_path: Full path to the checkpoint directory
+        metadata: Dictionary containing all checkpoint metadata
+    """
+    manifest_path = os.path.join("models", run_name, "manifest.json")
+    lock_path = manifest_path + ".lock"
+    
+    # Prepare the entry
+    entry = {
+        "type": checkpoint_type,
+        "path": checkpoint_path,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        **metadata
+    }
+    
+    # File locking for concurrent writes (cross-platform using filelock library)
+    max_retries = 10
+    base_retry_delay = 0.1  # Base delay for exponential backoff
+    
+    for attempt in range(max_retries):
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+            
+            # Use filelock for cross-platform file locking (non-blocking with timeout=0)
+            lock = FileLock(lock_path, timeout=0)
+            with lock:
+                # Load existing entries or initialize empty list
+                if os.path.exists(manifest_path):
+                    with open(manifest_path, 'r') as f:
+                        content = f.read().strip()
+                        if content:
+                            entries = json.loads(content)
+                        else:
+                            entries = []
+                else:
+                    entries = []
+                
+                # Append new entry
+                entries.append(entry)
+                
+                # Write to temporary file first (atomic write)
+                temp_path = manifest_path + ".tmp"
+                with open(temp_path, 'w') as tmp_file:
+                    json.dump(entries, tmp_file, indent=2)
+                
+                # Atomic rename
+                os.rename(temp_path, manifest_path)
+                
+                # Success - return
+                return
+                
+        except Timeout:
+            # Retryable: lock contention (FileLock raises Timeout when timeout=0 and lock is held)
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                raise RuntimeError(f"Could not acquire lock on {manifest_path} after {max_retries} attempts")
+        except IOError as e:
+            # Retryable: file system errors
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                raise RuntimeError(f"Could not acquire lock on {manifest_path} after {max_retries} attempts: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            # Non-retryable: corrupted file
+            raise RuntimeError(f"Manifest file is corrupted: {e}")
+        except Exception as e:
+            # Other errors - retry for transient issues
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                raise RuntimeError(f"Failed to write manifest entry after {max_retries} attempts: {e}")
+
+
 @ray.remote(num_gpus=1)
 def evaluate_baseline_model(
     model_id: str,
@@ -223,7 +363,6 @@ def evaluate_baseline_model(
     Used to verify the model actually knows the information before unlearning.
     """
     import torch
-    import json
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from utils.attention_backend import get_attn_implementation
     
@@ -566,6 +705,9 @@ def main(
     grad_accum_steps: int = 1,
     gradient_checkpointing: bool = False,
     attn_backend: Optional[str] = None,  # Attention backend: auto, flash_attention_2, sdpa, eager
+    ft_batch_size: Optional[int] = None,  # Separate batch size for RTT (defaults to batch_size)
+    ft_val_batch_size: Optional[int] = None,  # Separate val batch size for RTT (defaults to val_batch_size)
+    run_name: str = "",  # Run name for organizing model outputs
 ):
     try:
         if num_total_splits is None:
@@ -680,6 +822,33 @@ def main(
                     retain_logits_5_shot_dict,
                     samples
                 ) = ray.get(ref)
+            
+            # Write manifest entry for A checkpoint if it was saved
+            if save_name is not None and not just_eval:
+                # Extract metadata for A checkpoint
+                a_metadata = {
+                    "run_name": run_name,
+                    "method": unlearn_type.name,
+                    "dataset": dataset.name,
+                    "project": wandb_project_name,
+                    "model_id": base_model,
+                    "lr": lr,
+                    "epochs": epochs,
+                    "retain_coeff": retain_coeff,
+                }
+                
+                # Add optional fields
+                if lora_rank > 0:
+                    a_metadata["lora_rank"] = lora_rank
+                if steering_coeff is not None:
+                    a_metadata["steering_coeff"] = steering_coeff
+                
+                write_checkpoint_manifest_entry(
+                    run_name=run_name,
+                    checkpoint_type="A",
+                    checkpoint_path=model_path,
+                    metadata=a_metadata,
+                )
 
             if just_eval:
                 print(f"{base_model=}\n{forget_accs=}\n{retain_accs=}")  
@@ -688,6 +857,9 @@ def main(
             model_path = ft_model_path
         if dont_ft or just_eval:
             return
+        # Use separate batch sizes for RTT if provided, otherwise use unlearning batch sizes
+        rtt_batch_size = ft_batch_size if ft_batch_size is not None else batch_size
+        rtt_val_batch_size = ft_val_batch_size if ft_val_batch_size is not None else val_batch_size
         ft_refs = []
         # Compute RTT signature for matching B and C results
         rtt_sig = compute_rtt_signature(
@@ -695,18 +867,34 @@ def main(
             num_ft_splits, ft_freeze_layers, ft_data_format.name,
             eval_split_ids=eval_split_ids,
         )
+        
+        # Capture unlearning hyperparameters before FT loops (to avoid variable shadowing)
+        unlearn_lr = lr
+        unlearn_epochs = epochs
+        
+        # Helper function to extract remaining path after 'models/{run_name}/'
+        def extract_remaining_path(model_path: str) -> str:
+            """Extract path components after 'models/{run_name}/' from model path."""
+            path_parts = model_path.split('/')
+            if len(path_parts) > 1 and path_parts[0] == 'models':
+                # Skip 'models' and first part (which will be run_name), keep the rest
+                return '/'.join(path_parts[2:]) if len(path_parts) > 2 else '/'.join(path_parts[1:])
+            else:
+                return '/'.join(path_parts[1:]) if len(path_parts) > 1 else model_path
+        
         for loss_type in ft_loss_types:
-            for lr in ft_lrs:
+            for ft_lr in ft_lrs:
                 for ft_epochs in ft_epochs_lst:
                     if not ft_on_all:
                         for skip_split in eval_split_ids:
                             import finetune_corpus
+                            remaining_path = extract_remaining_path(model_path)
                             fted_model_path = (
-                                f"models/fted/"
-                                f"{'/'.join(model_path.split('/')[1:])}/"
+                                f"models/{run_name}/fted/"
+                                f"{remaining_path}/"
                                 f"{wandb_project_name}/"
                                 f"{loss_type}/ft-skip_split{skip_split}/"
-                                f"lr{lr}"
+                                f"lr{ft_lr}-epoch{ft_epochs}"
                             )
                             ft_files = [
                                 file for i, file in enumerate(val_files)
@@ -721,6 +909,21 @@ def main(
                                 i for i in range(num_total_splits)
                                 if i != skip_split
                             ]
+                            
+                            # Prepare parent metadata for B checkpoint (A checkpoint info)
+                            parent_metadata = build_parent_metadata(
+                                run_name=run_name,
+                                unlearn_type=unlearn_type,
+                                dataset=dataset,
+                                wandb_project_name=wandb_project_name,
+                                base_model=base_model,
+                                unlearn_lr=unlearn_lr,
+                                unlearn_epochs=unlearn_epochs,
+                                retain_coeff=retain_coeff,
+                                lora_rank=lora_rank,
+                                steering_coeff=steering_coeff,
+                            )
+                            
                             ref = finetune_corpus.main.remote(
                                 train_files=ft_files,
                                 val_files=ft_val_files,
@@ -728,10 +931,11 @@ def main(
                                 dev_set=ft_files[0],
                                 data_root=data_root,
                                 base_model=model_path,
-                                lr=lr,
+                                lr=ft_lr,
                                 epochs=ft_epochs,
                                 name=fted_model_path,
-                                batch_size=batch_size,
+                                batch_size=rtt_batch_size,
+                                val_batch_size=rtt_val_batch_size,
                                 save_name=(
                                     fted_model_path if save_ft_models
                                     else None
@@ -744,19 +948,39 @@ def main(
                                 hydra_dict=hydra_dict,
                                 data_format=ft_data_format,
                                 attn_backend=attn_backend,
+                                run_name=run_name,
+                                checkpoint_type="B",
+                                parent_metadata=parent_metadata,
+                                skip_split=skip_split,
                             )
                             ft_refs.append(ref)
                     else:
                         import finetune_corpus
+                        remaining_path = extract_remaining_path(model_path)
                         fted_model_path = (
-                            f"models/fted/"
-                            f"{'/'.join(model_path.split('/')[1:])}/"
-                            f"{loss_type}/all_splits/lr{lr}"
+                            f"models/{run_name}/fted/"
+                            f"{remaining_path}/"
+                            f"{loss_type}/all_splits/lr{ft_lr}-epoch{ft_epochs}"
                         )
                         ft_files = val_files
                         ft_val_files = val_files
                         ft_val_retain_files = val_retain_files
                         all_split_ids = list(range(num_total_splits))
+                        
+                        # Prepare parent metadata for B checkpoint (A checkpoint info)
+                        parent_metadata = build_parent_metadata(
+                            run_name=run_name,
+                            unlearn_type=unlearn_type,
+                            dataset=dataset,
+                            wandb_project_name=wandb_project_name,
+                            base_model=base_model,
+                            unlearn_lr=unlearn_lr,
+                            unlearn_epochs=unlearn_epochs,
+                            retain_coeff=retain_coeff,
+                            lora_rank=lora_rank,
+                            steering_coeff=steering_coeff,
+                        )
+                        
                         ref = finetune_corpus.main.remote(
                             train_files=ft_files,
                             val_files=ft_val_files,
@@ -764,10 +988,11 @@ def main(
                             dev_set=ft_files[0],
                             data_root=data_root,
                             base_model=model_path,
-                            lr=lr,
+                            lr=ft_lr,
                             epochs=ft_epochs,
                             name=fted_model_path,
-                            batch_size=batch_size,
+                            batch_size=ft_batch_size,
+                            val_batch_size=ft_val_batch_size,
                             save_name=(
                                 fted_model_path if save_ft_models
                                 else None
@@ -780,6 +1005,10 @@ def main(
                             hydra_dict=hydra_dict,
                             data_format=ft_data_format,
                             attn_backend=attn_backend,
+                            run_name=run_name,
+                            checkpoint_type="B",
+                            parent_metadata=parent_metadata,
+                            skip_split=None,  # ft_on_all doesn't have skip_split
                         )
                         ft_refs.append(ref)
         while len(ft_refs) > 0:
@@ -1243,7 +1472,10 @@ def run_pipeline(cfg: DictConfig) -> None:
             print(str(exc))
             return
 
-        num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()
+        # Use num_gpus from config if specified, otherwise default to 8 or available GPUs
+        num_gpus = OmegaConf.select(cfg, "num_gpus", default=None)
+        if num_gpus is None:
+            num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()
         ray.init(num_gpus=num_gpus)
         refs = []
         
@@ -1254,16 +1486,33 @@ def run_pipeline(cfg: DictConfig) -> None:
         curr_time = datetime.datetime.now()
         curr_time_str = curr_time.strftime("%Y-%m-%d-%H-%M-%S")
         start_time_sf_str = get_current_time().strftime("%Y-%m-%d-%H-%M-%S")
+        
+        # Load config flags early (needed for run_name validation)
+        only_ft = cfg.only_ft
+        just_eval = cfg.just_eval
+        dont_ft = cfg.dont_ft
+        
+        # Validate run_name for RTT-only runs BEFORE auto-generation
+        run_name = OmegaConf.select(cfg, "run_name", default=None)
+        run_name_was_provided = run_name is not None and run_name != ""
+        
+        if only_ft and not run_name_was_provided:
+            raise ValueError(
+                "run_name must be explicitly specified when only_ft=true. "
+                "Please set run_name in your config file (e.g., run_name: 'my_rtt_run')."
+            )
+        
+        # Generate run_name if not specified (defaults to timestamp)
+        if not run_name_was_provided:
+            run_name = curr_time.strftime("%Y-%m-%d_%H-%M-%S")
+        
         unlearn_types = [UnlearnType[ut] for ut in cfg.unlearn.types]
         datasets = [Datasets[d] for d in cfg.datasets]
         model_id = cfg.model_id
         unlearn_freeze_layers = cfg.unlearn.freeze_layers
         unlearn_types_config = cfg.unlearn.types_config
-        just_eval = cfg.just_eval
         eval_model_paths = cfg.eval_model_paths
-        only_ft = cfg.only_ft
         ft_model_paths = cfg.ft_model_paths
-        dont_ft = cfg.dont_ft
         wandb_project_name = cfg.wandb_project_name
         results_dir = cfg.results_dir
         
@@ -1279,6 +1528,9 @@ def run_pipeline(cfg: DictConfig) -> None:
         ft_lrs = cfg.ft.lrs
         ft_epochs_lst = cfg.ft.epochs_lst
         save_ft_models = cfg.ft.save_models
+        # Use separate batch sizes for RTT if specified, otherwise use global batch sizes
+        ft_batch_size = OmegaConf.select(cfg, "ft.batch_size", default=batch_size)
+        ft_val_batch_size = OmegaConf.select(cfg, "ft.val_batch_size", default=val_batch_size)
         eval_split_ids_cfg = OmegaConf.select(
             cfg, "ft.eval_split_ids", default=None
         )
@@ -1513,7 +1765,8 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     for sc in scs:
                                         for lora_rank in ranks:
                                             forget_model = (
-                                                f"models/{unlearn_type.name}/"
+                                                f"models/{run_name}/"
+                                                f"{unlearn_type.name}/"
                                                 f"{dataset.name}/"
                                                 f"{wandb_project_name}/"
                                                 f"rank{lora_rank}-sc{sc}-"
@@ -1603,6 +1856,9 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 grad_accum_steps=unlearn_grad_accum_steps,
                                                 gradient_checkpointing=unlearn_gradient_checkpointing,
                                                 attn_backend=attn_backend,
+                                                ft_batch_size=ft_batch_size,
+                                                ft_val_batch_size=ft_val_batch_size,
+                                                run_name=run_name,
                                             )]
 
             # Schedule baseline RTT (C) - once per unique (model_id, dataset, RTT-config)
@@ -1643,11 +1899,18 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         if i != skip_split
                                     ]
                                     baseline_rtt_path = (
-                                        f"models/baseline_rtt/"
+                                        f"models/{run_name}/baseline_rtt/"
                                         f"{dataset.name}/{model_id.replace('/', '_')}/"
                                         f"{loss_type.name}/skip_split{skip_split}/"
-                                        f"lr{ft_lr}"
+                                        f"lr{ft_lr}-epoch{ft_epochs}"
                                     )
+                                    # Prepare minimal metadata for C checkpoint
+                                    c_metadata = {
+                                        "run_name": run_name,
+                                        "dataset": dataset.name,
+                                        "model_id": model_id,
+                                    }
+                                    
                                     ref = finetune_corpus.main.remote(
                                         train_files=ft_files,
                                         val_files=ft_val_files,
@@ -1660,7 +1923,8 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         lr=ft_lr,
                                         epochs=ft_epochs,
                                         name=baseline_rtt_path,
-                                        batch_size=batch_size,
+                                        batch_size=ft_batch_size,
+                                        val_batch_size=ft_val_batch_size,
                                         save_name=baseline_rtt_path,
                                         loss_type=loss_type,
                                         project_name=f"{wandb_project_name}_baseline_rtt",
@@ -1670,6 +1934,10 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         hydra_dict=config_flat,
                                         data_format=ft_data_format,
                                         attn_backend=attn_backend,
+                                        run_name=run_name,
+                                        checkpoint_type="C",
+                                        parent_metadata=c_metadata,
+                                        skip_split=skip_split,
                                     )
                                     baseline_rtt_refs.append(ref)
 
@@ -1756,7 +2024,97 @@ def run_pipeline(cfg: DictConfig) -> None:
                     ft_data_format=ft_data_format,
                     unlearn_loss_type=unlearn_loss_type,
                     attn_backend=attn_backend,
+                    run_name=run_name,
                 )]
+
+            # Schedule baseline RTT (C) for only_ft mode - same as normal pipeline
+            if not dont_ft and not ft_on_all:
+                import finetune_corpus
+                for ft_model_path, dataset_str in ft_model_paths:
+                    dataset = Datasets[dataset_str]
+                    dataset_dict = dataset_dicts.get(dataset)
+                    if dataset_dict is None:
+                        dataset_dict = resolve_dataset_dict_paths(
+                            datasets_dict[dataset], data_root
+                        )
+                        dataset_dicts[dataset] = dataset_dict
+                    eval_split_ids = eval_split_ids_by_dataset.get(dataset)
+                    if eval_split_ids is None:
+                        num_total_splits = len(dataset_dict["val_files"])
+                        num_total_splits_by_dataset[dataset] = num_total_splits
+                        eval_split_ids = resolve_eval_split_ids(
+                            dataset.name, num_total_splits
+                        )
+                        eval_split_ids_by_dataset[dataset] = eval_split_ids
+                    else:
+                        num_total_splits = num_total_splits_by_dataset[dataset]
+                    rtt_sig = compute_rtt_signature(
+                        dataset.name, ft_loss_types, ft_lrs, ft_epochs_lst,
+                        num_ft_splits, ft_freeze_layers, ft_data_format.name,
+                        eval_split_ids=eval_split_ids,
+                    )
+                    baseline_key = (model_id, dataset.name, rtt_sig)
+                    if baseline_key in scheduled_baseline_rtt:
+                        continue
+                    scheduled_baseline_rtt.add(baseline_key)
+                    for loss_type in ft_loss_types:
+                        for ft_lr in ft_lrs:
+                            for ft_epochs in ft_epochs_lst:
+                                for skip_split in eval_split_ids:
+                                    ft_files = [
+                                        file for i, file in enumerate(
+                                            dataset_dict["val_files"]
+                                        )
+                                        if i != skip_split
+                                    ]
+                                    ft_val_files = (
+                                        [dataset_dict["val_files"][skip_split]]
+                                        if skip_split < len(
+                                            dataset_dict["val_files"]
+                                        ) else [""]
+                                    )
+                                    baseline_rtt_path = (
+                                        f"models/{run_name}/baseline_rtt/"
+                                        f"{dataset.name}/{model_id.replace('/', '_')}/"
+                                        f"{loss_type.name}/skip_split{skip_split}/"
+                                        f"lr{ft_lr}-epoch{ft_epochs}"
+                                    )
+                                    # Prepare minimal metadata for C checkpoint
+                                    c_metadata = {
+                                        "run_name": run_name,
+                                        "dataset": dataset.name,
+                                        "model_id": model_id,
+                                    }
+                                    
+                                    ref = finetune_corpus.main.remote(
+                                        train_files=ft_files,
+                                        val_files=ft_val_files,
+                                        val_retain_files=dataset_dict.get(
+                                            "val_retain_files", ft_files.copy()
+                                        ),
+                                        dev_set=ft_files[0] if ft_files else "",
+                                        data_root=data_root,
+                                        base_model=model_id,  # Original base model
+                                        lr=ft_lr,
+                                        epochs=ft_epochs,
+                                        name=baseline_rtt_path,
+                                        batch_size=ft_batch_size,
+                                        val_batch_size=ft_val_batch_size,
+                                        save_name=baseline_rtt_path,
+                                        loss_type=loss_type,
+                                        project_name=f"{wandb_project_name}_baseline_rtt",
+                                        diff_tokenizer=diff_tokenizer,
+                                        freeze_layers=ft_freeze_layers,
+                                        dont_eval=ft_dont_eval,
+                                        hydra_dict=config_flat,
+                                        data_format=ft_data_format,
+                                        attn_backend=attn_backend,
+                                        run_name=run_name,
+                                        checkpoint_type="C",
+                                        parent_metadata=c_metadata,
+                                        skip_split=skip_split,
+                                    )
+                                    baseline_rtt_refs.append(ref)
 
 
         elif just_eval:
@@ -1842,6 +2200,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                         ft_data_format=ft_data_format,
                         unlearn_loss_type=unlearn_loss_type,
                         attn_backend=attn_backend,
+                        run_name=run_name,
                     )]
 
         for ref in refs:

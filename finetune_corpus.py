@@ -13,10 +13,10 @@ import wandb
 import ray
 from lion_pytorch import Lion
 from enum import Enum, auto
-import fcntl
-from pipeline import LossType, DataFormat
+from pipeline import LossType, DataFormat, write_checkpoint_manifest_entry
 import datetime
 from utils.attention_backend import get_attn_implementation
+from typing import Dict, Any
 
 
 class Point(TypedDict):
@@ -315,6 +315,10 @@ def main(
     hydra_dict: dict = {},
     data_format: DataFormat = DataFormat.NOT_SPECIFIED,
     attn_backend: Optional[str] = None,
+    run_name: str = "",
+    checkpoint_type: str = "B",
+    parent_metadata: Optional[Dict[str, Any]] = None,
+    skip_split: Optional[int] = None,
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
 
@@ -485,12 +489,126 @@ def main(
             os.makedirs(os.path.dirname(curr_save_name), exist_ok=True)
             model.save_pretrained(curr_save_name)
             tokenizer.save_pretrained(curr_save_name)
+            
+            # Save metadata for intermediate checkpoint
+            metadata = {
+                "model_path": curr_save_name,
+                "base_model": base_model,
+                "kind": kind,
+                "lr": lr,
+                "epochs": epoch + 1,  # Current epoch for intermediate saves
+                "batch_size": batch_size,
+                "val_batch_size": val_batch_size,
+                "warmup_steps": warmup_steps,
+                "data_seed": data_seed,
+                "eval_every": eval_every,
+                "loss_type": loss_type.value if hasattr(loss_type, 'value') else str(loss_type),
+                "data_format": data_format.value if hasattr(data_format, 'value') else str(data_format),
+                "k_shot": k_shot,
+                "max_samples": max_samples,
+                "project_name": project_name,
+                "is_intermediate": True,
+            }
+            if freeze_layers is not None:
+                metadata["freeze_layers"] = freeze_layers
+            if keep_set is not None:
+                metadata["keep_set"] = keep_set
+                metadata["keep_set_weight"] = keep_set_weight
+            if train_on_wrong_answer:
+                metadata["train_on_wrong_answer"] = train_on_wrong_answer
+            if hydra_dict:
+                metadata["hydra_dict"] = hydra_dict
+            
+            metadata_path = os.path.join(curr_save_name, "model_metadata.json")
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
 
     if save_name is not None:
         curr_save_name = f"{save_name}-epoch{epochs}"
         os.makedirs(os.path.dirname(curr_save_name), exist_ok=True)
         model.save_pretrained(curr_save_name)
         tokenizer.save_pretrained(curr_save_name)
+        
+        # Save metadata file with model specifications
+        metadata = {
+            "model_path": curr_save_name,
+            "base_model": base_model,
+            "kind": kind,  # "base" for baseline RTT, "ft" for unlearn+RTT
+            "lr": lr,
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "val_batch_size": val_batch_size,
+            "warmup_steps": warmup_steps,
+            "data_seed": data_seed,
+            "eval_every": eval_every,
+            "loss_type": loss_type.value if hasattr(loss_type, 'value') else str(loss_type),
+            "data_format": data_format.value if hasattr(data_format, 'value') else str(data_format),
+            "k_shot": k_shot,
+            "max_samples": max_samples,
+            "project_name": project_name,
+        }
+        if freeze_layers is not None:
+            metadata["freeze_layers"] = freeze_layers
+        if keep_set is not None:
+            metadata["keep_set"] = keep_set
+            metadata["keep_set_weight"] = keep_set_weight
+        if train_on_wrong_answer:
+            metadata["train_on_wrong_answer"] = train_on_wrong_answer
+        if hydra_dict:
+            metadata["hydra_dict"] = hydra_dict
+        
+        metadata_path = os.path.join(curr_save_name, "model_metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Write manifest entry if run_name is provided
+        if run_name:
+            # Helper function to get loss_type string representation
+            def get_loss_type_str(lt):
+                return lt.name if hasattr(lt, 'name') else str(lt)
+            
+            if checkpoint_type == "B":
+                # B checkpoint: merge parent_metadata with current metadata
+                manifest_metadata = {}
+                if parent_metadata:
+                    manifest_metadata.update(parent_metadata)
+                # The base_model parameter is the A checkpoint path
+                manifest_metadata["a_path"] = base_model
+                # Preserve A checkpoint's hyperparameters (from parent_metadata)
+                if parent_metadata:
+                    manifest_metadata["a_lr"] = parent_metadata.get("lr")
+                    manifest_metadata["a_epochs"] = parent_metadata.get("epochs")
+                
+                # Add B-specific fields
+                manifest_metadata.update({
+                    "loss_type": get_loss_type_str(loss_type),
+                    "lr": lr,  # FT learning rate
+                    "epochs": epochs,  # FT epochs
+                })
+                if skip_split is not None:
+                    manifest_metadata["skip_split"] = skip_split
+                
+            elif checkpoint_type == "C":
+                # C checkpoint: minimal metadata from parent_metadata
+                manifest_metadata = {
+                    "dataset": parent_metadata.get("dataset") if parent_metadata else None,
+                    "model_id": parent_metadata.get("model_id", base_model) if parent_metadata else base_model,
+                    "loss_type": get_loss_type_str(loss_type),
+                    "lr": lr,
+                    "epochs": epochs,
+                }
+                if skip_split is not None:
+                    manifest_metadata["skip_split"] = skip_split
+            
+            else:
+                raise ValueError(f"Unknown checkpoint_type: {checkpoint_type}")
+            
+            write_checkpoint_manifest_entry(
+                run_name=run_name,
+                checkpoint_type=checkpoint_type,
+                checkpoint_path=curr_save_name,
+                metadata=manifest_metadata,
+            )
     
     dir = f"./evals/ft/{name}"
 
