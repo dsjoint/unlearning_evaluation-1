@@ -1000,6 +1000,41 @@ def main(
             model = model.merge_and_unload()
         model.save_pretrained(save_name)
         tokenizer.save_pretrained(save_name)
+        
+        # Save metadata file with model specifications
+        metadata = {
+            "model_path": save_name,
+            "base_model": base_model,
+            "unlearn_type": unlearn_type.value if hasattr(unlearn_type, 'value') else str(unlearn_type),
+            "lora_rank": lora_rank,
+            "lr": lr,
+            "epochs": epochs,
+            "retain_coeff": retain_coeff,
+            "batch_size": batch_size,
+            "val_batch_size": val_batch_size,
+            "warmup_steps": warmup_steps,
+            "data_seed": data_seed,
+            "eval_every": eval_every,
+            "data_format": data_format.value if hasattr(data_format, 'value') else str(data_format),
+            "loss_type": loss_type.value if hasattr(loss_type, 'value') else str(loss_type),
+            "max_samples": max_samples,
+            "max_seq_len": max_seq_len,
+            "grad_accum_steps": grad_accum_steps,
+            "gradient_checkpointing": gradient_checkpointing,
+            "use_4bit": use_4bit,
+            "bnb_4bit_compute_dtype": bnb_4bit_compute_dtype,
+            "bnb_4bit_quant_type": bnb_4bit_quant_type,
+            "bnb_4bit_double_quant": bnb_4bit_double_quant,
+            "project_name": project_name,
+        }
+        if freeze_layers is not None:
+            metadata["freeze_layers"] = freeze_layers
+        if hydra_dict:
+            metadata["hydra_dict"] = hydra_dict
+        
+        metadata_path = os.path.join(save_name, "model_metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
     
     if results_file is not None:
         lock = FileLock(f"{results_file}.lock")

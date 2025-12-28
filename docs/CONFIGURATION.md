@@ -45,9 +45,15 @@ eval_model_paths: ["TinyLlama/TinyLlama-1.1B-Chat-v1.0"]
 
 # Number of layers (auto-resolved from model config)
 num_layers: ${get_num_layers:${model_id}}
+
+# Run name for isolating different pipeline runs in models/ directory
+# - null (default): Auto-generate timestamp-based name (YYYY-MM-DD_HH-MM-SS)
+# - string: Use specified name (required for RTT-only runs with only_ft=true)
+# This creates a top-level folder: models/{run_name}/...
+run_name: null
 ```
 
-**Note:** Python files automatically load models based on config - no code changes needed when switching models.
+**Note:** Python files automatically load models based on config - no code changes needed when switching models. When `only_ft=true`, `run_name` must be explicitly specified.
 
 ---
 
@@ -134,6 +140,7 @@ warmup_steps: 24
 | `ft.num_splits` | 2 | Number of evaluation splits to average over |
 | `ft.eval_split_ids` | `null` | Explicit list of eval split IDs (e.g., `[0, 3]`). If `null`, splits are sampled deterministically |
 | `ft.eval_seed` | 0 | Seed for sampling eval splits when `eval_split_ids` is `null` |
+| `run_name` | `null` | Run name for isolating different pipeline runs. `null` (default) auto-generates timestamp (YYYY-MM-DD_HH-MM-SS). **Required** when `only_ft=true` |
 
 ### RTT Evaluation Split Configuration
 
@@ -159,6 +166,10 @@ python pipeline.py \
     batch_size=4 \
     attn_backend=sdpa \
     baseline_min_forget_acc=0.5
+
+# Specify run_name (required for only_ft=true, optional otherwise)
+python pipeline.py run_name="my_experiment_run"
+python pipeline.py --config-name=only_ft run_name="rtt_run_2024-12-25"
 ```
 
 ### Common Patterns
@@ -196,6 +207,7 @@ unlearn:
 - [ ] Consider adjusting `baseline_min_forget_acc` threshold (or set to 0 to disable)
 - [ ] Consider adjusting `batch_size` for model size
 - [ ] Consider adjusting learning rates in `types_config` sections
+- [ ] If using `only_ft=true`, specify `run_name` explicitly (required)
 - [ ] Test with a small configuration first (e.g., `testing=true`, `dont_ft=true`, single epoch)
 
 ## Checklist: Changing Resources

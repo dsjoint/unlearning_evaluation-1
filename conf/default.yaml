@@ -28,8 +28,14 @@ datasets: [YEARS]
 wandb_project_name: "lora_years_qwen_3b"
 results_dir: "evals/pipeline"
 data_root: "data"
-batch_size: 12
-val_batch_size: 24
+
+# Run name for isolating different pipeline runs in models/ directory
+# - null (default): Auto-generate timestamp-based name (YYYY-MM-DD_HH-MM-SS)
+# - string: Use specified name (required for RTT-only runs with only_ft=true)
+# This creates a top-level folder: models/{run_name}/...
+run_name: null
+batch_size: 8
+val_batch_size: 16
 warmup_steps: 24
 data_seed: 4
 eval_every: 2
@@ -47,7 +53,7 @@ unlearn:
   types: [LORA]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
-  lora_ranks: [16, 32]
+  lora_ranks: [16, 32, 64]
   use_4bit: false  # Disabled for faster training (LoRA instead of QLoRA)
   bnb_4bit_quant_type: nf4
   bnb_4bit_compute_dtype: bf16
@@ -273,11 +279,11 @@ unlearn:
       loss_type: CORPUS
       datasets_config:
         YEARS:
-          epochs_lst: [5]
+          epochs_lst: [6]
           lrs: [4e-7]
           rcs:
             range: []
-            add: [0.01]
+            add: [0.001]
         YEARS_MMLU_RETAIN:
           epochs_lst: [3]
           lrs: [4e-7]
@@ -317,9 +323,12 @@ ft:
   # A list of lists; resolves to coefficient * num_layers. ex: [[0, "0.5"]]
   freeze_layers_coeffs: null
   freeze_layers: ${resolve_freeze_layers:${ft.freeze_layers_coeffs}, ${model_id}}
-  epochs_lst: [1]
+  epochs_lst: [2]
   lrs: [1e-6]
   save_models: true # save models for later use
+  # Separate batch sizes for RTT to avoid OOM when running in parallel
+  batch_size: 8  
+  val_batch_size: 16 
 
 
 hydra:

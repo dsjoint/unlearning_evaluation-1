@@ -1,0 +1,31 @@
+defaults:
+  - default
+
+# Run only RTT (fine-tuning) on already-trained unlearned models
+only_ft: true
+
+# run_name is REQUIRED for RTT-only runs
+# This specifies where the RTT models will be saved
+run_name: "rtt_run_2024-12-25"  # Change this to your desired run name
+
+# List of [model_path, dataset] pairs for RTT
+# Model paths should be relative to the working directory (where pipeline.py is run from)
+# Note: These paths should point to existing unlearned models (A models) in the new format with run_name
+# Format: models/{run_name}/{method}/{dataset}/{project}/rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/
+ft_model_paths:
+  - ["models/rtt_run_2024-12-25/LORA/YEARS/lora_years_qwen_3b/rank16-sc20-Qwen/Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6", "YEARS"]
+  - ["models/rtt_run_2024-12-25/LORA/YEARS/lora_years_qwen_3b/rank16-sc20-Qwen/Qwen2.5-3B-Instruct-rc0.01-lr4e-07-epochs6", "YEARS"]
+
+# Note: This will run RTT on both the unlearned models (Condition B) and baseline models (Condition C)
+# Note: num_gpus: 1 is inherited from default.yaml to prevent parallel RTT tasks (which cause OOM)
+
+# RTT configuration (from default.yaml)
+ft:
+  num_splits: 1
+  loss_types: [QUESTION_LETTER_ANSWER]
+  epochs_lst: [1,2]
+  lrs: [1e-6]
+  save_models: true
+  batch_size: 8
+  val_batch_size: 16
+

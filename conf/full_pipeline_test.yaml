@@ -7,13 +7,16 @@ just_eval: false
 dont_ft: false
 testing: true
 
+# run_name: null  # Will auto-generate timestamp-based name (e.g., "2024-12-25_14-30-00")
+# Or specify a custom name: run_name: "my_test_run"
+
 model_id: "Qwen/Qwen2.5-3B-Instruct"
 datasets: [YEARS]
 wandb_project_name: "full_pipeline_test"
 
 unlearn:
   types: [LORA]
-  lora_ranks: [4]
+  lora_ranks: [2, 4]
   max_samples_lst: [32]  # Small sample size for speed
   save_unlearn_model: true
   types_config:
@@ -22,7 +25,7 @@ unlearn:
       datasets_config:
         YEARS:
           epochs_lst: [1]  # Just 1 epoch
-          lrs: [1e-3]
+          lrs: [1e-3, 1e-4]
           rcs:
             range: []
             add: [1]  # Single retain_coeff
