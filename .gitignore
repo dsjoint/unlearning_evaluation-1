@@ -15,7 +15,8 @@ pipeline_error.log
 
 # Generated data (large files)
 models/
-evals/
+evals/ft/models/  # Ignore any model checkpoints in evals
+# Allow evals/pipeline/ (contains CSV/JSON results)
 
 # WandB
 wandb/
