@@ -575,6 +575,7 @@ def write_matched_forgetting_json(
     dataset_name: str,
     lora_rank: int,
     selection_data: dict,
+    k_budget: Optional[int] = None,
 ) -> None:
     """Write matched forgetting selection data with file locking.
     
@@ -583,6 +584,7 @@ def write_matched_forgetting_json(
         dataset_name: Dataset name
         lora_rank: LoRA rank
         selection_data: Dictionary containing selection metadata
+        k_budget: Optional K budget (for learned top-K mode)
     """
     matched_forgetting_path = os.path.join("models", run_name, "matched_forgetting.json")
     
@@ -591,7 +593,12 @@ def write_matched_forgetting_json(
             current_data = {}
         if dataset_name not in current_data:
             current_data[dataset_name] = {}
-        current_data[dataset_name][str(lora_rank)] = selection_data
+        # Use rank_K key format if k_budget is provided, otherwise use rank-only key
+        if k_budget is not None:
+            key = f"rank{lora_rank}_k{k_budget}"
+        else:
+            key = str(lora_rank)
+        current_data[dataset_name][key] = selection_data
         return current_data
     
     _write_json_with_lock(matched_forgetting_path, update_matched_data, initial_value={})
@@ -717,7 +724,8 @@ def evaluate_baseline_retain_acc(
         retain_accs, retain_accs_calibrated, retain_logits_dict,
         retain_accs_5_shot, retain_accs_5_shot_calibrated,
         retain_logits_5_shot_dict,
-        samples
+        samples,
+        gate_metadata
     ) = unlearn_corpus.just_eval(
         train_files=[],
         wrong_unlearn_files=[],
@@ -1196,7 +1204,8 @@ def main(
                     retain_logits_dict,
                     retain_accs_5_shot, retain_accs_5_shot_calibrated,
                     retain_logits_5_shot_dict,
-                    samples
+                    samples,
+                    gate_metadata
                 ) = ray.get(ref)
             else:
                 ref = unlearn.remote(
@@ -1246,7 +1255,8 @@ def main(
                     retain_logits_dict,
                     retain_accs_5_shot, retain_accs_5_shot_calibrated,
                     retain_logits_5_shot_dict,
-                    samples
+                    samples,
+                    gate_metadata
                 ) = ray.get(ref)
             
             # Write manifest entry for A checkpoint if it was saved
@@ -1268,6 +1278,15 @@ def main(
                     a_metadata["lora_rank"] = lora_rank
                 if steering_coeff is not None:
                     a_metadata["steering_coeff"] = steering_coeff
+                
+                # Add gate metadata if present
+                if gate_metadata:
+                    a_metadata["lora_layer_budget_k"] = gate_metadata.get("lora_layer_budget_k")
+                    a_metadata["selected_blocks"] = gate_metadata.get("selected_blocks")
+                    a_metadata["final_gate_scores"] = gate_metadata.get("final_gate_scores")
+                    a_metadata["gate_tau_start"] = gate_metadata.get("gate_tau_start")
+                    a_metadata["gate_tau_end"] = gate_metadata.get("gate_tau_end")
+                    a_metadata["gate_seed"] = gate_metadata.get("gate_seed")
                 
                 write_checkpoint_manifest_entry(
                     run_name=run_name,
@@ -2159,6 +2178,25 @@ def run_pipeline(cfg: DictConfig) -> None:
                 unlearn_loss_type_str =  unlearn_type_config["loss_type"]
                 unlearn_loss_type = LossType[unlearn_loss_type_str]
                 
+                # Extract gate config keys and add to config_flat for hydra_dict
+                layer_selection_mode = unlearn_type_config.get("layer_selection_mode", "none")
+                lora_layer_budget_k = unlearn_type_config.get("lora_layer_budget_k", None)
+                gate_tau_start = unlearn_type_config.get("gate_tau_start", 10.0)
+                gate_tau_end = unlearn_type_config.get("gate_tau_end", 0.1)
+                gate_warmup_steps = unlearn_type_config.get("gate_warmup_steps", 0)
+                gate_seed = unlearn_type_config.get("gate_seed", None)
+                gate_reg_coeff = unlearn_type_config.get("gate_reg_coeff", 0.0)
+                # Add to config_flat so they're available in hydra_dict
+                config_flat["layer_selection_mode"] = layer_selection_mode
+                if lora_layer_budget_k is not None:
+                    config_flat["lora_layer_budget_k"] = lora_layer_budget_k
+                config_flat["gate_tau_start"] = gate_tau_start
+                config_flat["gate_tau_end"] = gate_tau_end
+                config_flat["gate_warmup_steps"] = gate_warmup_steps
+                if gate_seed is not None:
+                    config_flat["gate_seed"] = gate_seed
+                config_flat["gate_reg_coeff"] = gate_reg_coeff
+                
                 # Matched forgetting path for LORA
                 if matched_forgetting_enabled and unlearn_type == UnlearnType.LORA:
                     # Load matched forgetting config
@@ -2239,38 +2277,277 @@ def run_pipeline(cfg: DictConfig) -> None:
                     # Update datasets list to only valid ones
                     datasets = valid_datasets_for_mf
                     
-                    # Per-rank matched forgetting search
-                    print(f"\n{'='*60}")
-                    print(f"Matched Forgetting: Starting grid search")
-                    print(f"Target forget accuracy: {target_acc} ± {tolerance}")
-                    print(f"Max trials per rank: {max_trials}")
-                    print(f"{'='*60}\n")
-                    
-                    for dataset in datasets:
-                        dataset_dict = dataset_dicts[dataset]
-                        eval_split_ids = eval_split_ids_by_dataset[dataset]
-                        num_total_splits = num_total_splits_by_dataset[dataset]
+                    # Check if learned top-K is enabled
+                    if layer_selection_mode == "learned_topk_hard":
+                        # Sweep over K values (with fixed rank)
+                        # Use first lora_rank from config, or require single rank
+                        if len(lora_ranks) > 1:
+                            raise ValueError("Matched forgetting with learned_topk_hard requires single lora_rank")
+                        fixed_lora_rank = lora_ranks[0]
                         
-                        for lora_rank in lora_ranks:
-                            print(f"\nMatched Forgetting: {dataset.name}, rank {lora_rank}")
-                            candidates = []
-                            candidate_refs = []
+                        # Parse K budget list (similar to how rc_range is parsed)
+                        if isinstance(lora_layer_budget_k, list):
+                            k_values = lora_layer_budget_k
+                        elif isinstance(lora_layer_budget_k, dict):
+                            # Support range syntax like rc_range
+                            k_range = parse_and_validate_list_config(
+                                {"k_range": lora_layer_budget_k.get("range", [])},
+                                "k_range", [2, 4, 8], param_name="k_range"
+                            )
+                            k_add = parse_and_validate_list_config(
+                                {"k_add": lora_layer_budget_k.get("add", [])},
+                                "k_add", [], allow_empty=True, param_name="k_add"
+                            )
+                            k_values = k_range + k_add
+                        else:
+                            raise ValueError(f"Invalid lora_layer_budget_k config: {lora_layer_budget_k}")
+                        
+                        # Per-K matched forgetting search
+                        print(f"\n{'='*60}")
+                        print(f"Matched Forgetting: Starting K-sweep grid search")
+                        print(f"Target forget accuracy: {target_acc} ± {tolerance}")
+                        print(f"Max trials per K: {max_trials}")
+                        print(f"Fixed rank: {fixed_lora_rank}, K values: {k_values}")
+                        print(f"{'='*60}\n")
+                        
+                        for dataset in datasets:
+                            dataset_dict = dataset_dicts[dataset]
+                            eval_split_ids = eval_split_ids_by_dataset[dataset]
+                            num_total_splits = num_total_splits_by_dataset[dataset]
                             
-                            # Generate candidate hyperparameter sets
-                            candidate_count = 0
-                            for epochs in epochs_lst:
-                                for lr in lrs:
-                                    for rc in rcs:
-                                        if candidate_count >= max_trials:
-                                            break
+                            for k_budget in k_values:
+                                print(f"\nMatched Forgetting: {dataset.name}, rank {fixed_lora_rank}, K={k_budget}")
+                                candidates = []
+                                candidate_refs = []
+                                
+                                # Generate candidate hyperparameter sets
+                                candidate_count = 0
+                                for epochs in epochs_lst:
+                                    for lr in lrs:
+                                        for rc in rcs:
+                                            if candidate_count >= max_trials:
+                                                break
+                                            
+                                            model_id_safe = model_id.replace('/', '_')
+                                            # Include K in save name for K-sweep
+                                            candidate_path = (
+                                                f"models/{run_name}/"
+                                                f"{unlearn_type.name}/{dataset.name}/"
+                                                f"{wandb_project_name}/"
+                                                f"rank{fixed_lora_rank}-k{k_budget}-sc20-{model_id_safe}-rc{rc}-lr{lr}-epochs{epochs}"
+                                            )
+                                            save_name_candidate = candidate_path if (save_unlearn_model and save_all_candidates) else None
+                                            
+                                            # Update config_flat with current k_budget for this candidate
+                                            config_flat["lora_layer_budget_k"] = k_budget
+                                            
+                                            # Launch unlearn run
+                                            ref = main.remote(
+                                                unlearn_type=unlearn_type,
+                                                dataset=dataset,
+                                                unlearn_files=dataset_dict["unlearn_files"],
+                                                wrong_unlearn_files=dataset_dict.get("wrong_unlearn_files", []),
+                                                fixed_wrong_unlearn_files=dataset_dict.get("fixed_wrong_unlearn_files", []),
+                                                val_files=dataset_dict["val_files"],
+                                                dev_file=dataset_dict["dev_file"],
+                                                retain_files=dataset_dict["retain_files"],
+                                                val_retain_files=dataset_dict["val_retain_files"],
+                                                retain_dev_file=dataset_dict["retain_dev_file"],
+                                                data_root=data_root,
+                                                base_model=model_id,
+                                                lr=lr,
+                                                epochs=epochs,
+                                                batch_size=batch_size,
+                                                val_batch_size=val_batch_size,
+                                                retain_coeff=rc,
+                                                warmup_steps=warmup_steps,
+                                                data_seed=data_seed,
+                                                eval_every=eval_every,
+                                                save_name=save_name_candidate,
+                                                name=candidate_path,
+                                                wandb_project_name=wandb_project_name,
+                                                results_dir=results_dir,
+                                                only_ft=only_ft,
+                                                ft_model_path="",
+                                                num_ft_splits=num_ft_splits,
+                                                eval_split_ids=eval_split_ids,
+                                                num_total_splits=num_total_splits,
+                                                ft_loss_types=ft_loss_types,
+                                                ft_lrs=ft_lrs,
+                                                ft_epochs_lst=ft_epochs_lst,
+                                                save_ft_models=save_ft_models,
+                                                start_time=curr_time_str,
+                                                start_time_sf=start_time_sf_str,
+                                                dont_ft=True,  # Don't run RTT during search
+                                                unlearn_freeze_layers=unlearn_freeze_layers,
+                                                ft_freeze_layers=ft_freeze_layers,
+                                                ft_dont_eval=ft_dont_eval,
+                                                unlearn_mcq=unlearn_mcq,
+                                                hydra_dict=config_flat,
+                                                unlearn_data_format=unlearn_data_format,
+                                                ft_data_format=ft_data_format,
+                                                unlearn_loss_type=unlearn_loss_type,
+                                                steering_coeff=20,
+                                                max_samples=max_samples_lst[0] if max_samples_lst else 999999999,
+                                                lora_rank=fixed_lora_rank,
+                                                use_4bit=unlearn_use_4bit,
+                                                bnb_4bit_compute_dtype=unlearn_bnb_4bit_compute_dtype,
+                                                bnb_4bit_quant_type=unlearn_bnb_4bit_quant_type,
+                                                bnb_4bit_double_quant=unlearn_bnb_4bit_double_quant,
+                                                max_seq_len=unlearn_max_seq_len,
+                                                grad_accum_steps=unlearn_grad_accum_steps,
+                                                gradient_checkpointing=unlearn_gradient_checkpointing,
+                                                attn_backend=attn_backend,
+                                                ft_batch_size=ft_batch_size,
+                                                ft_val_batch_size=ft_val_batch_size,
+                                                run_name=run_name,
+                                            )
+                                            candidate_refs.append((ref, {
+                                                "epochs": epochs,
+                                                "lr": lr,
+                                                "rc": rc,
+                                                "lora_rank": fixed_lora_rank,
+                                                "k_budget": k_budget,
+                                                "model_path": candidate_path,
+                                                "save_name": save_name_candidate,
+                                            }))
+                                            candidate_count += 1
+                                
+                                # Collect results and select best candidate for this K
+                                print(f"  Waiting for {len(candidate_refs)} candidates to complete...")
+                                for ref, candidate_meta in candidate_refs:
+                                    try:
+                                        (
+                                            model_path,
+                                            forget_accs, forget_accs_calibrated, forget_logits_dict,
+                                            retain_accs, retain_accs_calibrated, retain_logits_dict,
+                                            retain_accs_5_shot, retain_accs_5_shot_calibrated,
+                                            retain_logits_5_shot_dict,
+                                            samples,
+                                            gate_metadata
+                                        ) = ray.get(ref)
                                         
-                                        model_id_safe = model_id.replace('/', '_')
-                                        candidate_path = (
-                                            f"models/{run_name}/"
-                                            f"{unlearn_type.name}/{dataset.name}/"
-                                            f"{wandb_project_name}/"
-                                            f"rank{lora_rank}-sc20-{model_id_safe}-rc{rc}-lr{lr}-epochs{epochs}"
-                                        )
+                                        forget_acc = extract_avg_acc(forget_accs, acc_selection_rule)
+                                        retain_acc = extract_avg_acc(retain_accs, acc_selection_rule)
+                                        
+                                        candidate_meta.update({
+                                            "forget_acc": forget_acc,
+                                            "retain_acc": retain_acc,
+                                            "model_path": model_path,
+                                            "gate_metadata": gate_metadata,
+                                        })
+                                        candidates.append(candidate_meta)
+                                        print(f"    Candidate (rc={candidate_meta['rc']}, lr={candidate_meta['lr']}, epochs={candidate_meta['epochs']}): "
+                                              f"forget_acc={forget_acc:.4f}, retain_acc={retain_acc:.4f}")
+                                    except Exception as e:
+                                        print(f"    ERROR: Failed to process candidate {candidate_meta}: {e}")
+                                        continue
+                                
+                                # Select best candidate for this K
+                                selected = select_matched_forgetting_candidate(
+                                    candidates=candidates,
+                                    target_acc=target_acc,
+                                    tolerance=tolerance,
+                                    baseline_retain_acc=baseline_retain_accs[dataset],
+                                    selection_priority=selection_priority,
+                                )
+                                
+                                if selected:
+                                    print(f"  Selected: rc={selected['rc']}, lr={selected['lr']}, epochs={selected['epochs']}")
+                                    print(f"    forget_acc={selected['forget_acc']:.4f}, retain_acc={selected['retain_acc']:.4f}")
+                                    
+                                    # Write matched_forgetting.json entry with file locking
+                                    selection_data = {
+                                        "selected_hparams": {
+                                            "epochs": selected["epochs"],
+                                            "lr": selected["lr"],
+                                            "rc": selected["rc"],
+                                        },
+                                        "achieved_forget_acc": selected["forget_acc"],
+                                        "achieved_retain_acc": selected["retain_acc"],
+                                        "model_path": selected["model_path"],
+                                        "baseline_retain_acc": baseline_retain_accs[dataset],
+                                        "retain_damage": baseline_retain_accs[dataset] - selected["retain_acc"],
+                                    }
+                                    # Store full gate_metadata if present
+                                    if selected.get("gate_metadata"):
+                                        selection_data["gate_metadata"] = selected["gate_metadata"]
+                                    
+                                    write_matched_forgetting_json(
+                                        run_name=run_name,
+                                        dataset_name=dataset.name,
+                                        lora_rank=fixed_lora_rank,
+                                        k_budget=k_budget,
+                                        selection_data=selection_data,
+                                    )
+                                    
+                                    # Write manifest entry with matched_forgetting tag
+                                    a_metadata = {
+                                        "run_name": run_name,
+                                        "method": unlearn_type.name,
+                                        "dataset": dataset.name,
+                                        "project": wandb_project_name,
+                                        "model_id": model_id,
+                                        "lr": selected["lr"],
+                                        "epochs": selected["epochs"],
+                                        "retain_coeff": selected["rc"],
+                                        "lora_rank": fixed_lora_rank,
+                                    }
+                                    # Add gate metadata if present
+                                    if selected.get("gate_metadata"):
+                                        gate_meta = selected["gate_metadata"]
+                                        a_metadata["lora_layer_budget_k"] = gate_meta.get("lora_layer_budget_k")
+                                        a_metadata["selected_blocks"] = gate_meta.get("selected_blocks")
+                                        a_metadata["final_gate_scores"] = gate_meta.get("final_gate_scores")
+                                        a_metadata["gate_tau_start"] = gate_meta.get("gate_tau_start")
+                                        a_metadata["gate_tau_end"] = gate_meta.get("gate_tau_end")
+                                        a_metadata["gate_seed"] = gate_meta.get("gate_seed")
+                                    
+                                    write_checkpoint_manifest_entry(
+                                        run_name=run_name,
+                                        checkpoint_type="A",
+                                        checkpoint_path=selected["model_path"],
+                                        metadata=a_metadata,
+                                        tags=["matched_forgetting"],
+                                    )
+                                    
+                                    # Store selected checkpoint for RTT phase (key includes k_budget)
+                                    selected_checkpoints[(dataset, fixed_lora_rank, k_budget)] = selected["model_path"]
+                                else:
+                                    print(f"  WARNING: No candidate selected for {dataset.name} rank {fixed_lora_rank} K={k_budget}")
+                    else:
+                        # Original matched forgetting (sweep over ranks)
+                        print(f"\n{'='*60}")
+                        print(f"Matched Forgetting: Starting grid search")
+                        print(f"Target forget accuracy: {target_acc} ± {tolerance}")
+                        print(f"Max trials per rank: {max_trials}")
+                        print(f"{'='*60}\n")
+                        
+                        for dataset in datasets:
+                            dataset_dict = dataset_dicts[dataset]
+                            eval_split_ids = eval_split_ids_by_dataset[dataset]
+                            num_total_splits = num_total_splits_by_dataset[dataset]
+                            
+                            for lora_rank in lora_ranks:
+                                print(f"\nMatched Forgetting: {dataset.name}, rank {lora_rank}")
+                                candidates = []
+                                candidate_refs = []
+                                
+                                # Generate candidate hyperparameter sets
+                                candidate_count = 0
+                                for epochs in epochs_lst:
+                                    for lr in lrs:
+                                        for rc in rcs:
+                                            if candidate_count >= max_trials:
+                                                break
+                                            
+                                            model_id_safe = model_id.replace('/', '_')
+                                            candidate_path = (
+                                                f"models/{run_name}/"
+                                                f"{unlearn_type.name}/{dataset.name}/"
+                                                f"{wandb_project_name}/"
+                                                f"rank{lora_rank}-sc20-{model_id_safe}-rc{rc}-lr{lr}-epochs{epochs}"
+                                            )
                                         save_name_candidate = candidate_path if (save_unlearn_model and save_all_candidates) else None
                                         
                                         # Launch unlearn run
@@ -2354,7 +2631,8 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         retain_accs, retain_accs_calibrated, retain_logits_dict,
                                         retain_accs_5_shot, retain_accs_5_shot_calibrated,
                                         retain_logits_5_shot_dict,
-                                        samples
+                                        samples,
+                                        gate_metadata
                                     ) = ray.get(ref)
                                     
                                     forget_acc = extract_avg_acc(forget_accs, acc_selection_rule)
@@ -2364,6 +2642,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         "forget_acc": forget_acc,
                                         "retain_acc": retain_acc,
                                         "model_path": model_path,
+                                        "gate_metadata": gate_metadata,  # Store gate metadata for manifest
                                     })
                                     candidates.append(candidate_meta)
                                     print(f"    Candidate (rc={candidate_meta['rc']}, lr={candidate_meta['lr']}, epochs={candidate_meta['epochs']}): "
@@ -2399,22 +2678,27 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     # In practice, if save_all_candidates=False, we should save the selected one
                                 
                                 # Write matched_forgetting.json entry with file locking
+                                selection_data = {
+                                    "selected_hparams": {
+                                        "epochs": selected["epochs"],
+                                        "lr": selected["lr"],
+                                        "rc": selected["rc"],
+                                    },
+                                    "achieved_forget_acc": selected["forget_acc"],
+                                    "achieved_retain_acc": selected["retain_acc"],
+                                    "model_path": selected["model_path"],
+                                    "baseline_retain_acc": baseline_retain_accs[dataset],
+                                    "retain_damage": baseline_retain_accs[dataset] - selected["retain_acc"],
+                                }
+                                # Store full gate_metadata if present
+                                if selected.get("gate_metadata"):
+                                    selection_data["gate_metadata"] = selected["gate_metadata"]
+                                
                                 write_matched_forgetting_json(
                                     run_name=run_name,
                                     dataset_name=dataset.name,
                                     lora_rank=lora_rank,
-                                    selection_data={
-                                        "selected_hparams": {
-                                            "epochs": selected["epochs"],
-                                            "lr": selected["lr"],
-                                            "rc": selected["rc"],
-                                        },
-                                        "achieved_forget_acc": selected["forget_acc"],
-                                        "achieved_retain_acc": selected["retain_acc"],
-                                        "model_path": selected["model_path"],
-                                        "baseline_retain_acc": baseline_retain_accs[dataset],
-                                        "retain_damage": baseline_retain_accs[dataset] - selected["retain_acc"],
-                                    }
+                                    selection_data=selection_data,
                                 )
                                 
                                 # Write manifest entry with matched_forgetting tag
@@ -2429,6 +2713,15 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     "retain_coeff": selected["rc"],
                                     "lora_rank": lora_rank,
                                 }
+                                # Add gate metadata if present
+                                if selected.get("gate_metadata"):
+                                    gate_meta = selected["gate_metadata"]
+                                    a_metadata["lora_layer_budget_k"] = gate_meta.get("lora_layer_budget_k")
+                                    a_metadata["selected_blocks"] = gate_meta.get("selected_blocks")
+                                    a_metadata["final_gate_scores"] = gate_meta.get("final_gate_scores")
+                                    a_metadata["gate_tau_start"] = gate_meta.get("gate_tau_start")
+                                    a_metadata["gate_tau_end"] = gate_meta.get("gate_tau_end")
+                                    a_metadata["gate_seed"] = gate_meta.get("gate_seed")
                                 
                                 write_checkpoint_manifest_entry(
                                     run_name=run_name,
@@ -2452,6 +2745,29 @@ def run_pipeline(cfg: DictConfig) -> None:
                     continue
                 
                 # Original unlearning loop (existing code)
+                # Extract gate config keys and add to config_flat for hydra_dict (if not already done)
+                if "layer_selection_mode" not in config_flat:
+                    layer_selection_mode = unlearn_type_config.get("layer_selection_mode", "none")
+                    lora_layer_budget_k = unlearn_type_config.get("lora_layer_budget_k", None)
+                    gate_tau_start = unlearn_type_config.get("gate_tau_start", 10.0)
+                    gate_tau_end = unlearn_type_config.get("gate_tau_end", 0.1)
+                    gate_warmup_steps = unlearn_type_config.get("gate_warmup_steps", 0)
+                    gate_seed = unlearn_type_config.get("gate_seed", None)
+                    gate_reg_coeff = unlearn_type_config.get("gate_reg_coeff", 0.0)
+                    # Add to config_flat so they're available in hydra_dict
+                    config_flat["layer_selection_mode"] = layer_selection_mode
+                    if lora_layer_budget_k is not None:
+                        config_flat["lora_layer_budget_k"] = lora_layer_budget_k
+                    config_flat["gate_tau_start"] = gate_tau_start
+                    config_flat["gate_tau_end"] = gate_tau_end
+                    config_flat["gate_warmup_steps"] = gate_warmup_steps
+                    if gate_seed is not None:
+                        config_flat["gate_seed"] = gate_seed
+                    config_flat["gate_reg_coeff"] = gate_reg_coeff
+                else:
+                    layer_selection_mode = config_flat.get("layer_selection_mode", "none")
+                    lora_layer_budget_k = config_flat.get("lora_layer_budget_k", None)
+                
                 for dataset in datasets:
                     dataset_config = (
                         unlearn_type_config["datasets_config"][dataset.name]
@@ -2495,15 +2811,27 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     for sc in scs:
                                         for lora_rank in ranks:
                                             model_id_safe = model_id.replace('/', '_')
-                                            forget_model = (
-                                                f"models/{run_name}/"
-                                                f"{unlearn_type.name}/"
-                                                f"{dataset.name}/"
-                                                f"{wandb_project_name}/"
-                                                f"rank{lora_rank}-sc{sc}-"
-                                                f"{model_id_safe}-rc{rc}-lr{lr}-"
-                                                f"epochs{epochs}"
-                                            )
+                                            # Include K in save name if learned top-K is enabled
+                                            if layer_selection_mode == "learned_topk_hard" and lora_layer_budget_k is not None:
+                                                forget_model = (
+                                                    f"models/{run_name}/"
+                                                    f"{unlearn_type.name}/"
+                                                    f"{dataset.name}/"
+                                                    f"{wandb_project_name}/"
+                                                    f"rank{lora_rank}-k{lora_layer_budget_k}-sc{sc}-"
+                                                    f"{model_id_safe}-rc{rc}-lr{lr}-"
+                                                    f"epochs{epochs}"
+                                                )
+                                            else:
+                                                forget_model = (
+                                                    f"models/{run_name}/"
+                                                    f"{unlearn_type.name}/"
+                                                    f"{dataset.name}/"
+                                                    f"{wandb_project_name}/"
+                                                    f"rank{lora_rank}-sc{sc}-"
+                                                    f"{model_id_safe}-rc{rc}-lr{lr}-"
+                                                    f"epochs{epochs}"
+                                                )
                                             save_name = (
                                                 forget_model if save_unlearn_model
                                                 else None
@@ -2600,7 +2928,15 @@ def run_pipeline(cfg: DictConfig) -> None:
                 print(f"Matched Forgetting: Scheduling RTT on selected checkpoints")
                 print(f"{'='*60}\n")
                 
-                for (dataset, lora_rank), selected_model_path in selected_checkpoints.items():
+                for key, selected_model_path in selected_checkpoints.items():
+                    # Handle both key formats: (dataset, lora_rank) or (dataset, lora_rank, k_budget)
+                    if len(key) == 2:
+                        dataset, lora_rank = key
+                        k_budget = None
+                    elif len(key) == 3:
+                        dataset, lora_rank, k_budget = key
+                    else:
+                        raise ValueError(f"Unexpected selected_checkpoints key format: {key}")
                     dataset_dict = dataset_dicts[dataset]
                     eval_split_ids = eval_split_ids_by_dataset[dataset]
                     num_total_splits = num_total_splits_by_dataset[dataset]
@@ -2613,8 +2949,13 @@ def run_pipeline(cfg: DictConfig) -> None:
                     
                     matched_forgetting_path = os.path.join("models", run_name, "matched_forgetting.json")
                     matched_data = _read_json_with_lock(matched_forgetting_path, default={})
-                    if matched_data and dataset.name in matched_data and str(lora_rank) in matched_data[dataset.name]:
-                        selected_hparams = matched_data[dataset.name][str(lora_rank)].get("selected_hparams", {})
+                    # Handle both key formats: rank-only or rank_K
+                    if k_budget is not None:
+                        key = f"rank{lora_rank}_k{k_budget}"
+                    else:
+                        key = str(lora_rank)
+                    if matched_data and dataset.name in matched_data and key in matched_data[dataset.name]:
+                        selected_hparams = matched_data[dataset.name][key].get("selected_hparams", {})
                         unlearn_lr = selected_hparams.get("lr", DEFAULT_UNLEARN_LR)
                         unlearn_epochs = selected_hparams.get("epochs", DEFAULT_UNLEARN_EPOCHS)
                         retain_coeff = selected_hparams.get("rc", DEFAULT_RETAIN_COEFF)
@@ -2663,6 +3004,20 @@ def run_pipeline(cfg: DictConfig) -> None:
                                             lora_rank=lora_rank,
                                             steering_coeff=None,
                                         )
+                                        # Add gate metadata from matched_forgetting.json if present
+                                        if matched_data and dataset.name in matched_data and key in matched_data[dataset.name]:
+                                            mf_entry = matched_data[dataset.name][key]
+                                            if "gate_metadata" in mf_entry:
+                                                # Full gate metadata is available - add to parent_metadata for inheritance
+                                                gate_meta = mf_entry["gate_metadata"]
+                                                parent_metadata.update({
+                                                    "lora_layer_budget_k": gate_meta.get("lora_layer_budget_k"),
+                                                    "selected_blocks": gate_meta.get("selected_blocks"),
+                                                    "final_gate_scores": gate_meta.get("final_gate_scores"),
+                                                    "gate_tau_start": gate_meta.get("gate_tau_start"),
+                                                    "gate_tau_end": gate_meta.get("gate_tau_end"),
+                                                    "gate_seed": gate_meta.get("gate_seed"),
+                                                })
                                         
                                         ref = finetune_corpus.main.remote(
                                             train_files=ft_files,

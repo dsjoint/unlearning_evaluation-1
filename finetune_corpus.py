@@ -602,6 +602,20 @@ def main(
                 if parent_metadata:
                     manifest_metadata["a_lr"] = parent_metadata.get("lr")
                     manifest_metadata["a_epochs"] = parent_metadata.get("epochs")
+                    
+                    # Inherit gate metadata from parent A checkpoint if present
+                    if "lora_layer_budget_k" in parent_metadata:
+                        manifest_metadata["lora_layer_budget_k"] = parent_metadata.get("lora_layer_budget_k")
+                    if "selected_blocks" in parent_metadata:
+                        manifest_metadata["selected_blocks"] = parent_metadata.get("selected_blocks")
+                    if "final_gate_scores" in parent_metadata:
+                        manifest_metadata["final_gate_scores"] = parent_metadata.get("final_gate_scores")
+                    if "gate_tau_start" in parent_metadata:
+                        manifest_metadata["gate_tau_start"] = parent_metadata.get("gate_tau_start")
+                    if "gate_tau_end" in parent_metadata:
+                        manifest_metadata["gate_tau_end"] = parent_metadata.get("gate_tau_end")
+                    if "gate_seed" in parent_metadata:
+                        manifest_metadata["gate_seed"] = parent_metadata.get("gate_seed")
                 
                 # Add B-specific fields
                 manifest_metadata.update({

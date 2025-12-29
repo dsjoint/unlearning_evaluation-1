@@ -277,6 +277,13 @@ unlearn:
             add: [0, 2, 4]
     LORA:
       loss_type: CORPUS
+      layer_selection_mode: "none"  # Options: "none", "learned_topk_hard"
+      lora_layer_budget_k: null  # int, required if layer_selection_mode="learned_topk_hard"
+      gate_tau_start: 10.0  # Initial temperature
+      gate_tau_end: 0.1  # Final temperature
+      gate_warmup_steps: 0  # Optional: warmup steps before annealing (default: 0)
+      gate_seed: null  # Optional: random seed for gate initialization (default: None, use data_seed)
+      gate_reg_coeff: 0.0  # Optional: L2 regularization on gate logits (default: 0.0)
       datasets_config:
         YEARS:
           epochs_lst: [6]

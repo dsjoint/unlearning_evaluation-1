@@ -1,0 +1,42 @@
+defaults:
+  - default
+  - _self_
+
+# Matched Forgetting Configuration
+# This config enables matched-forgetting selection for LoRA unlearning
+# Performs grid search over hyperparameters and selects checkpoints achieving
+# target forget accuracy while minimizing retain damage
+
+# Enable matched forgetting
+matched_forgetting:
+  enabled: true
+  target_forget_acc: 0.60  # Target forget accuracy (A*)
+  tolerance: 0.02  # ±0.02 around target
+  max_trials_per_rank: 3  # Maximum candidates to try per LoRA rank (optimized for single GPU ~3 hour runtime)
+  search_space:
+    rc_range: ${get_log_range:0.001, 0.1, 3}  # [0.001, 0.003, 0.009, 0.027, 0.081]
+    rc_add: [0.01]  # Additional hand-picked value
+    lr_range: [4e-7]  # Single learning rate (reduced for speed)
+    epochs_range: [3]  # Single epoch value (reduced for speed)
+  selection_priority: ["retain_damage", "compute", "retain_coeff"]  # Tie-breaking order
+  acc_selection_rule: final_epoch  # "final_epoch" or "max_epoch"
+  save_all_candidates: false  # Save all candidates during search
+
+# LoRA configuration - test ranks 16, 32, 48
+unlearn:
+  types: [LORA]
+  lora_ranks: [16, 32, 48]
+  save_unlearn_model: true
+  # Note: types_config.LORA settings are not used when matched_forgetting is enabled
+  # The search_space in matched_forgetting takes precedence
+
+# Project name for this experiment
+wandb_project_name: "matched_forgetting_lora"
+
+# Ensure RTT runs on selected checkpoints
+dont_ft: false
+
+# Save RTT models
+ft:
+  save_models: true
+

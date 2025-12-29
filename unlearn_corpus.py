@@ -511,6 +511,102 @@ def _data_path(data_root: str, rel_path: str, ext: str = ".jsonl") -> str:
     return base
 
 
+def get_model_layers(model):
+    """Extract transformer layers from PEFT-wrapped or base model.
+    
+    Args:
+        model: PEFT-wrapped model or base model
+    
+    Returns:
+        layers: ModuleList of transformer layers
+        actual_model: The underlying model (not PEFT wrapper)
+    
+    Raises:
+        AttributeError: If layers cannot be found in model structure
+    """
+    # PEFT wraps the model: model.base_model is LoraModel, need to go deeper
+    if hasattr(model, 'base_model'):
+        # PEFT-wrapped: get the actual base model
+        if hasattr(model.base_model, 'base_model'):
+            # Nested: model.base_model.base_model is the actual model
+            actual_model = model.base_model.base_model
+        else:
+            # Single level: model.base_model is the actual model
+            actual_model = model.base_model
+    else:
+        # Not PEFT-wrapped
+        actual_model = model
+    
+    # Handle different model structures: Llama has model.model.layers, others might have model.layers
+    if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
+        layers = actual_model.model.layers
+    elif hasattr(actual_model, 'layers'):
+        layers = actual_model.layers
+    else:
+        raise AttributeError(f"Could not find layers attribute in model structure. actual_model type: {type(actual_model)}")
+    
+    return layers, actual_model
+
+
+def register_lora_gating_hooks(model, num_layers):
+    """Register hooks to gate only LoRA adapter delta.
+    
+    Hooks read from model._gate_mask[layer_idx] tensor (updated each step).
+    Do NOT call .item() - keep tensors in computation graph.
+    
+    Args:
+        model: PEFT-wrapped model
+        num_layers: Number of transformer layers
+    
+    Returns:
+        List of hook handles for cleanup
+    """
+    hook_handles = []
+    layers, actual_model = get_model_layers(model)
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    
+    for layer_idx in range(num_layers):
+        layer = layers[layer_idx]
+        
+        for module_name in target_modules:
+            if hasattr(layer, module_name):
+                module = getattr(layer, module_name)
+                
+                # Check if module has LoRA adapters
+                if hasattr(module, 'lora_B'):
+                    # Hook on adapter submodules to gate only the adapter contribution
+                    def make_adapter_hook(lidx):
+                        def adapter_hook(adapter_module, input, output):
+                            # Hook on adapter's forward (lora_B)
+                            # Gate the adapter output (this is the delta contribution)
+                            gate_value = model._gate_mask[lidx]  # Tensor, no .item()
+                            return output * gate_value
+                        return adapter_hook
+                    
+                    # CRITICAL: Gate only once (on lora_B output) to avoid m^2 effect
+                    # LoRA computation: lora_delta = lora_B(lora_A(input)) * scale
+                    # Gating both lora_A and lora_B would give: m * lora_B(m * lora_A(x)) = m^2 * lora_delta
+                    # Instead, gate only lora_B output: lora_B(lora_A(x)) * m = m * lora_delta
+                    
+                    # Gate only lora_B (not lora_A) to avoid double gating
+                    # Handle dict, ModuleDict, or single module
+                    if isinstance(module.lora_B, (dict, torch.nn.ModuleDict)):
+                        # Multiple adapters: hook all
+                        for adapter_name in module.lora_B.keys():
+                            handle = module.lora_B[adapter_name].register_forward_hook(
+                                make_adapter_hook(layer_idx)
+                            )
+                            hook_handles.append(handle)
+                    else:
+                        # Single adapter
+                        handle = module.lora_B.register_forward_hook(
+                            make_adapter_hook(layer_idx)
+                        )
+                        hook_handles.append(handle)
+    
+    return hook_handles
+
+
 def main(
     train_files: list[str],
     wrong_unlearn_files: list[str],
@@ -642,6 +738,49 @@ def main(
         )
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
+
+    # Gate parameters for learned top-K selection
+    layer_selection_mode = hydra_dict.get("layer_selection_mode", "none")
+    lora_layer_budget_k = hydra_dict.get("lora_layer_budget_k", None)
+    gate_logits = None
+    num_layers = model.config.num_hidden_layers if hasattr(model, 'config') and hasattr(model.config, 'num_hidden_layers') else (model.base_model.config.num_hidden_layers if hasattr(model, 'base_model') and hasattr(model.base_model.config, 'num_hidden_layers') else None)
+
+    if layer_selection_mode == "learned_topk_hard":
+        if lora_rank == 0:
+            raise ValueError("layer_selection_mode='learned_topk_hard' requires lora_rank > 0")
+        if lora_layer_budget_k is None:
+            raise ValueError("lora_layer_budget_k must be set when layer_selection_mode='learned_topk_hard'")
+        if num_layers is None:
+            raise ValueError("Could not determine num_layers from model config")
+        if lora_layer_budget_k <= 0:
+            raise ValueError(f"lora_layer_budget_k must be > 0, got {lora_layer_budget_k}")
+        if lora_layer_budget_k > num_layers:
+            raise ValueError(f"lora_layer_budget_k ({lora_layer_budget_k}) > num_layers ({num_layers})")
+        
+        # Initialize gate logits (small random values)
+        # Use local RNG to avoid affecting global random state
+        gate_seed = hydra_dict.get("gate_seed", data_seed)
+        rng = torch.Generator(device=device)
+        rng.manual_seed(gate_seed)
+        gate_logits = torch.nn.Parameter(
+            torch.randn(num_layers, device=device, generator=rng) * 0.01  # Small initialization
+        )
+        # Register as model parameter so optimizer includes it
+        model.register_parameter("gate_logits", gate_logits)
+        
+        # Initialize gate mask tensor (updated each step, read by hooks)
+        # Compute initial Top-K mask at tau_start to satisfy spec (only K blocks active)
+        gate_tau_start = hydra_dict.get("gate_tau_start", 10.0)
+        s_init = torch.sigmoid(gate_logits / gate_tau_start)
+        _, topk_indices_init = torch.topk(s_init, k=lora_layer_budget_k, dim=0)
+        m_init = torch.zeros_like(s_init)
+        m_init.scatter_(0, topk_indices_init, 1.0)
+        m_st_init = m_init + (s_init - s_init.detach())  # STE
+        model._gate_mask = m_st_init  # Initialize to Top-K mask, not all ones
+        
+        # Register hooks once (do not re-register in training loop)
+        hook_handles = register_lora_gating_hooks(model, num_layers)
+        model._lora_gating_hooks = hook_handles  # Store for cleanup
 
     # Only optimize trainable parameters (LoRA params if lora_rank > 0).
     optimizer = Lion(
@@ -922,6 +1061,40 @@ def main(
         for i, batch in enumerate(tqdm(batches, desc=f"Training epoch {epoch}")):
             j = i % len(retain_batches)
 
+            # Compute gate mask (if learned top-K enabled)
+            selected_blocks_step = None
+            tau = None  # Initialize for reuse in logging
+            if gate_logits is not None:
+                # Compute temperature (annealed) - ONCE, reuse for logging
+                gate_tau_start = hydra_dict.get("gate_tau_start", 10.0)
+                gate_tau_end = hydra_dict.get("gate_tau_end", 0.1)
+                gate_warmup_steps = hydra_dict.get("gate_warmup_steps", 0)
+                
+                total_steps = len(batches) * epochs
+                current_step = epoch * len(batches) + i
+                
+                if current_step < gate_warmup_steps:
+                    tau = gate_tau_start
+                else:
+                    progress = (current_step - gate_warmup_steps) / max(1, total_steps - gate_warmup_steps)
+                    tau = gate_tau_start - (gate_tau_start - gate_tau_end) * min(1.0, progress)
+                
+                # Compute soft scores and hard mask
+                s = torch.sigmoid(gate_logits / tau)
+                _, topk_indices = torch.topk(s, k=lora_layer_budget_k, dim=0)
+                m = torch.zeros_like(s)
+                m.scatter_(0, topk_indices, 1.0)
+                m_st = m + (s - s.detach())  # STE
+                
+                selected_blocks_step = topk_indices.cpu().tolist()
+                
+                # Update model field that hooks read from (tensor stays in graph)
+                model._gate_mask = m_st  # Hooks will read this tensor each forward pass
+                
+                # Runtime assertion: hard mask should sum to exactly K
+                if current_step % 100 == 0:
+                    assert m.sum().item() == lora_layer_budget_k, f"Hard mask sum {m.sum()} != K {lora_layer_budget_k}"
+
             forget_loss = get_loss(
                 model,
                 batch,
@@ -952,6 +1125,12 @@ def main(
 
             try:
                 raw_loss = forget_loss + retain_coeff * retain_loss
+                # Add optional L2 regularization on gate logits
+                if gate_logits is not None:
+                    gate_reg_coeff = hydra_dict.get("gate_reg_coeff", 0.0)
+                    if gate_reg_coeff > 0:
+                        reg_loss = gate_reg_coeff * (gate_logits ** 2).sum()
+                        raw_loss = raw_loss + reg_loss
             except Exception as e:
                 print(f"""
                     error. {forget_loss=}\n{retain_loss=}
@@ -972,7 +1151,7 @@ def main(
 
             if not disable_wandb:
                 current_lr = optimizer.param_groups[0]["lr"]
-                wandb.log({
+                log_dict = {
                     "unlearning/train_loss": raw_loss.item(),
                     "unlearning_other/epoch": epoch + i / len(batches),
                     "unlearning_other/lr": current_lr,
@@ -980,7 +1159,26 @@ def main(
                     "unlearning_other/optimizer_step": optimizer_step,
                     "unlearning/forget_loss": forget_loss.item(),
                     "unlearning/retain_loss": retain_loss.item()
-                })
+                }
+                
+                # Add gate logging if learned top-K enabled
+                if gate_logits is not None and selected_blocks_step is not None:
+                    # Reuse tau computed above, don't recompute
+                    log_dict["gating/selected_blocks_step"] = selected_blocks_step
+                    log_dict["gating/gate_scores_mean"] = gate_logits.mean().item()
+                    log_dict["gating/gate_scores_std"] = gate_logits.std().item()
+                    log_dict["gating/temperature"] = tau
+                    log_dict["gating/num_selected"] = len(selected_blocks_step)
+                    
+                    # Log flip rate (how often top-K membership changes)
+                    if hasattr(model, '_prev_selected_blocks_step'):
+                        prev_selected = set(model._prev_selected_blocks_step)
+                        curr_selected = set(selected_blocks_step)
+                        flip_rate = len(prev_selected.symmetric_difference(curr_selected)) / (2 * lora_layer_budget_k)
+                        log_dict["gating/flip_rate"] = flip_rate
+                    model._prev_selected_blocks_step = selected_blocks_step
+                
+                wandb.log(log_dict)
 
         if (not just_eval and (epoch + 1) % eval_every) == 0:
             eval_res = eval(epoch + 1)
@@ -994,10 +1192,79 @@ def main(
 
     if not just_eval or not evaled_0:
         eval(epochs)
+    
+    # Prepare gate metadata for return (compute before hardening)
+    gate_metadata = {}
+    if gate_logits is not None:
+        gate_tau_end = hydra_dict.get("gate_tau_end", 0.1)
+        s_final = torch.sigmoid(gate_logits / gate_tau_end)
+        _, final_topk_indices = torch.topk(s_final, k=lora_layer_budget_k, dim=0)
+        selected_blocks_final = final_topk_indices.cpu().tolist()  # Final canonical selection
+        gate_metadata = {
+            "lora_layer_budget_k": lora_layer_budget_k,
+            "selected_blocks": selected_blocks_final,
+            "final_gate_scores": gate_logits.detach().cpu().tolist(),
+            "gate_tau_start": hydra_dict.get("gate_tau_start", 10.0),
+            "gate_tau_end": hydra_dict.get("gate_tau_end", 0.1),
+            "gate_seed": hydra_dict.get("gate_seed", data_seed),
+        }
+    
     if save_name is not None:
+        selected_blocks_final = None
+        if gate_logits is not None:
+            # Remove forward hooks before saving
+            if hasattr(model, '_lora_gating_hooks'):
+                for handle in model._lora_gating_hooks:
+                    handle.remove()
+                delattr(model, '_lora_gating_hooks')
+            
+            # Get final selected blocks (canonical list for manifest) - use from gate_metadata
+            selected_blocks_final = gate_metadata.get("selected_blocks", [])
+            
+            # Zero out LoRA weights for non-selected blocks
+            # Handle PEFT's adapter structure (may have dict, ModuleDict, or single module)
+            layers, actual_model = get_model_layers(model)
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            
+            for layer_idx in range(num_layers):
+                if layer_idx not in selected_blocks_final:
+                    layer = layers[layer_idx]
+                    for module_name in target_modules:
+                        if hasattr(layer, module_name):
+                            module = getattr(layer, module_name)
+                            
+                            # Handle PEFT adapter structure (dict, ModuleDict, or single module)
+                            if hasattr(module, 'lora_A'):
+                                if isinstance(module.lora_A, (dict, torch.nn.ModuleDict)):
+                                    # Multiple adapters: zero all
+                                    for adapter_name in module.lora_A.keys():
+                                        if hasattr(module.lora_A[adapter_name], 'weight'):
+                                            module.lora_A[adapter_name].weight.data.zero_()
+                                elif hasattr(module.lora_A, 'weight'):
+                                    # Single adapter
+                                    module.lora_A.weight.data.zero_()
+                            
+                            if hasattr(module, 'lora_B'):
+                                if isinstance(module.lora_B, (dict, torch.nn.ModuleDict)):
+                                    # Multiple adapters: zero all
+                                    for adapter_name in module.lora_B.keys():
+                                        if hasattr(module.lora_B[adapter_name], 'weight'):
+                                            module.lora_B[adapter_name].weight.data.zero_()
+                                elif hasattr(module.lora_B, 'weight'):
+                                    # Single adapter
+                                    module.lora_B.weight.data.zero_()
+            
+            # Remove gate_logits parameter before saving (it's not needed for inference)
+            # Use _parameters.pop for reliable removal (delattr may not work reliably)
+            if hasattr(model, '_parameters') and 'gate_logits' in model._parameters:
+                model._parameters.pop('gate_logits', None)
+            if hasattr(model, '_gate_mask'):
+                delattr(model, '_gate_mask')
+        
         # Merge LoRA weights into base model if applicable.
+        # Do this AFTER zeroing weights, BEFORE saving
         if lora_rank > 0:
-            model = model.merge_and_unload()
+            model = model.merge_and_unload()  # Merge LoRA into base (non-selected blocks already zeroed)
         model.save_pretrained(save_name)
         tokenizer.save_pretrained(save_name)
         
@@ -1068,7 +1335,8 @@ def main(
         retain_accs, retain_accs_calibrated, retain_logits_dict,
         retain_accs_5_shot, retain_accs_5_shot_calibrated,
         retain_logits_5_shot_dict,
-        samples
+        samples,
+        gate_metadata  # Gate metadata for manifest entries
     )
 
 

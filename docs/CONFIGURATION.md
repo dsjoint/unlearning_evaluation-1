@@ -76,6 +76,14 @@ unlearn:
   types_config:
     LORA:
       loss_type: CORPUS
+      # Learned Top-K Block Selection (optional)
+      layer_selection_mode: "none"  # Options: "none", "learned_topk_hard"
+      lora_layer_budget_k: null     # int, required if layer_selection_mode="learned_topk_hard"
+      gate_tau_start: 10.0          # Initial temperature for gate annealing
+      gate_tau_end: 0.1              # Final temperature for gate annealing
+      gate_warmup_steps: 0           # Warmup steps before temperature annealing
+      gate_seed: null                # Random seed for gate initialization (default: uses data_seed)
+      gate_reg_coeff: 0.0            # L2 regularization on gate logits
       datasets_config:
         YEARS:
           epochs_lst: [3]
@@ -83,6 +91,57 @@ unlearn:
           rcs:
             range: ${get_log_range:1e-2, 1e2, 10}  # Log range: [start, start*step, ...] until < end
             add: []                                  # Additional values to include
+```
+
+**Learned Top-K Block Selection:**
+
+When `layer_selection_mode="learned_topk_hard"`, exactly K transformer blocks will have active LoRA adapters during training. The selection is learned via gate logits with Top-K hard masking and straight-through estimator (STE). The checkpoint is hardened by zeroing non-selected LoRA weights before saving.
+
+**Key Parameters:**
+- `lora_layer_budget_k`: Number of blocks to select (must be ≤ `num_layers`, must be > 0)
+- `gate_tau_start` / `gate_tau_end`: Temperature annealing range (higher = softer selection, lower = harder selection)
+- `gate_warmup_steps`: Steps before temperature annealing begins (default: 0)
+- `gate_reg_coeff`: L2 regularization on gate logits (default: 0.0)
+
+**Requirements:**
+- Requires `lora_rank > 0` (LoRA must be enabled)
+- `lora_layer_budget_k` must be set when `layer_selection_mode="learned_topk_hard"`
+
+**Example:**
+```yaml
+unlearn:
+  types: [LORA]
+  lora_ranks: [8]
+  types_config:
+    LORA:
+      layer_selection_mode: "learned_topk_hard"
+      lora_layer_budget_k: 4  # Select exactly 4 blocks
+      gate_tau_start: 10.0
+      gate_tau_end: 0.1
+      datasets_config:
+        YEARS:
+          epochs_lst: [5]
+          lrs: [4e-7]
+          rcs:
+            add: [0.1]
+```
+
+**Matched Forgetting with Learned Top-K:**
+
+When matched forgetting is enabled with learned top-K, the pipeline sweeps over K values (with fixed rank) instead of LoRA ranks:
+
+```yaml
+matched_forgetting:
+  enabled: true
+unlearn:
+  types: [LORA]
+  lora_ranks: [8]  # Single rank required when using learned top-K
+  types_config:
+    LORA:
+      layer_selection_mode: "learned_topk_hard"
+      lora_layer_budget_k:  # Can be list or dict with range/add
+        range: [2, 4, 8]    # K values to sweep
+        add: [16]           # Additional K values
 ```
 
 **OmegaConf Resolvers:**
