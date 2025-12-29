@@ -322,6 +322,30 @@ def main(
 ):
     assert (keep_set and keep_set_weight) or (not keep_set and not keep_set_weight)
 
+    # For type C (baseline RTT) checkpoints, skip if model already exists
+    if checkpoint_type == "C" and save_name is not None:
+        final_save_name = f"{save_name}-epoch{epochs}"
+        if os.path.exists(final_save_name) and os.path.exists(
+            os.path.join(final_save_name, "config.json")
+        ):
+            print(
+                f"Skipping baseline RTT training - model already exists: {final_save_name}"
+            )
+            # Return empty results to match expected return format
+            return {
+                "base_model": base_model,
+                "forget_accs_local": {},
+                "forget_accs_calibrated_local": {},
+                "forget_logits_dict": {},
+                "retain_accs_local": {},
+                "retain_accs_calibrated_local": {},
+                "retain_logits_dict": {},
+                "loss_type": loss_type,
+                "train_files": train_files,
+                "val_files": val_files,
+                "dev_set": dev_set,
+            }
+
     curr_time = datetime.datetime.now()
     wandb.init(project=project_name, config={**locals(), "hydra_dict": hydra_dict}, name=name+f"---{curr_time}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -590,25 +614,37 @@ def main(
                 
             elif checkpoint_type == "C":
                 # C checkpoint: minimal metadata from parent_metadata
-                manifest_metadata = {
-                    "dataset": parent_metadata.get("dataset") if parent_metadata else None,
-                    "model_id": parent_metadata.get("model_id", base_model) if parent_metadata else base_model,
-                    "loss_type": get_loss_type_str(loss_type),
-                    "lr": lr,
-                    "epochs": epochs,
-                }
-                if skip_split is not None:
-                    manifest_metadata["skip_split"] = skip_split
+                # Skip writing manifest entry if model already exists (to avoid duplicates)
+                if os.path.exists(curr_save_name) and os.path.exists(
+                    os.path.join(curr_save_name, "config.json")
+                ):
+                    print(
+                        f"Skipping manifest entry for baseline RTT - model already exists: {curr_save_name}"
+                    )
+                    # Skip manifest entry but continue with rest of function
+                    manifest_metadata = None  # Mark as skipped
+                else:
+                    manifest_metadata = {
+                        "dataset": parent_metadata.get("dataset") if parent_metadata else None,
+                        "model_id": parent_metadata.get("model_id", base_model) if parent_metadata else base_model,
+                        "loss_type": get_loss_type_str(loss_type),
+                        "lr": lr,
+                        "epochs": epochs,
+                    }
+                    if skip_split is not None:
+                        manifest_metadata["skip_split"] = skip_split
             
             else:
                 raise ValueError(f"Unknown checkpoint_type: {checkpoint_type}")
             
-            write_checkpoint_manifest_entry(
-                run_name=run_name,
-                checkpoint_type=checkpoint_type,
-                checkpoint_path=curr_save_name,
-                metadata=manifest_metadata,
-            )
+            # Write manifest entry (skip if manifest_metadata is None, which indicates model already exists)
+            if manifest_metadata is not None:
+                write_checkpoint_manifest_entry(
+                    run_name=run_name,
+                    checkpoint_type=checkpoint_type,
+                    checkpoint_path=curr_save_name,
+                    metadata=manifest_metadata,
+                )
     
     dir = f"./evals/ft/{name}"
 

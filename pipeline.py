@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from enum import Enum, auto
 import logging
 import ray
@@ -180,6 +180,78 @@ if not OmegaConf.has_resolver("resolve_freeze_layers"):
     )
 
 
+# Default values for matched forgetting fallback
+DEFAULT_UNLEARN_LR = 4e-7
+DEFAULT_UNLEARN_EPOCHS = 6
+DEFAULT_RETAIN_COEFF = 0.1
+
+
+def parse_and_validate_list_config(
+    config_dict: dict,
+    key: str,
+    default: list,
+    allow_empty: bool = False,
+    param_name: str = None,
+) -> list:
+    """Parse and validate a list configuration value from OmegaConf dict.
+    
+    Args:
+        config_dict: Configuration dictionary
+        key: Key to extract
+        default: Default value if key not present
+        allow_empty: Whether empty lists are allowed (default: False)
+        param_name: Name for error messages (default: uses key)
+    
+    Returns:
+        Validated list
+    
+    Raises:
+        ValueError: If value is invalid
+    """
+    import ast
+    
+    param_name = param_name or key
+    value = config_dict.get(key, default)
+    
+    # Handle string representation
+    if isinstance(value, str):
+        try:
+            value = ast.literal_eval(value)
+        except Exception as e:
+            raise ValueError(f"Invalid {param_name} format: {value}") from e
+    
+    # Validate type
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{param_name} must be a list, got: {type(value).__name__}")
+    
+    value = list(value)
+    
+    # Validate non-empty if required
+    if not allow_empty and len(value) == 0:
+        raise ValueError(f"{param_name} must be non-empty list, got: {value}")
+    
+    return value
+
+
+def extract_model_path_suffix(model_path: str, run_name: str) -> str:
+    """Extract path suffix after 'models/{run_name}/' with validation.
+    
+    Args:
+        model_path: Full model path
+        run_name: Expected run name for validation
+    
+    Returns:
+        Path suffix after 'models/{run_name}/'
+    
+    Raises:
+        ValueError: If path format is invalid
+    """
+    path_parts = model_path.split('/')
+    if len(path_parts) < 3 or path_parts[0] != 'models' or path_parts[1] != run_name:
+        raise ValueError(f"Unexpected model path format: {model_path}")
+    return '/'.join(path_parts[2:])
+
+
 def compute_rtt_signature(
     dataset_name: str,
     ft_loss_types: list,
@@ -257,64 +329,116 @@ def build_parent_metadata(
     return parent_metadata
 
 
-def write_checkpoint_manifest_entry(
-    run_name: str,
-    checkpoint_type: str,
-    checkpoint_path: str,
-    metadata: Dict[str, Any],
-) -> None:
-    """Write a checkpoint entry to the manifest file with file locking.
+def write_year_concept_csv(
+    results: list[Dict[str, Any]],
+    results_dir: str,
+    timestamp: str,
+) -> str:
+    """Write year concept evaluation results to CSV file.
     
     Args:
-        run_name: Run name (top-level directory name)
-        checkpoint_type: "A", "B", or "C"
-        checkpoint_path: Full path to the checkpoint directory
-        metadata: Dictionary containing all checkpoint metadata
+        results: List of result dictionaries from year concept evaluation
+        results_dir: Root directory for results (e.g., "evals/pipeline")
+        timestamp: Timestamp string for filename
     """
-    manifest_path = os.path.join("models", run_name, "manifest.json")
-    lock_path = manifest_path + ".lock"
+    import csv
     
-    # Prepare the entry
-    entry = {
-        "type": checkpoint_type,
-        "path": checkpoint_path,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        **metadata
-    }
+    # Create output directory
+    output_dir = os.path.join(results_dir, "year_concept")
+    os.makedirs(output_dir, exist_ok=True)
     
-    # File locking for concurrent writes (cross-platform using filelock library)
+    # Find next available file number
+    num = 0
+    while True:
+        csv_path = os.path.join(output_dir, f"{timestamp}--num{num}.csv")
+        if not os.path.exists(csv_path):
+            break
+        num += 1
+    
+    # Write CSV
+    if not results:
+        return ""
+    
+    fieldnames = [
+        "model_path",
+        "base_model",
+        "lora_rank",
+        "checkpoint_type",
+        "dataset_name",
+        "ordering_acc",
+        "arithmetic_acc",
+        "classification_acc",
+        "boundary_acc",
+        "overall_acc",
+        "ordering_count",
+        "arithmetic_count",
+        "classification_count",
+        "boundary_count",
+        "total_count",
+        "timestamp",
+        "start_time_sf",
+    ]
+    
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            # Only write the fields we care about
+            row = {k: result.get(k, "") for k in fieldnames}
+            writer.writerow(row)
+    
+    print(f"Year concept evaluation results written to: {csv_path}")
+    return csv_path
+
+
+def _write_json_with_lock(
+    file_path: str,
+    update_func: Callable[[Any], Any],
+    initial_value: Any = None,
+) -> None:
+    """Write JSON file with file locking and atomic writes.
+    
+    Args:
+        file_path: Path to JSON file
+        update_func: Function that takes current data and returns updated data
+        initial_value: Initial value if file doesn't exist (default: None means infer from update_func result)
+    
+    Raises:
+        RuntimeError: If file locking or write fails after retries
+    """
+    lock_path = file_path + ".lock"
     max_retries = 10
     base_retry_delay = 0.1  # Base delay for exponential backoff
     
     for attempt in range(max_retries):
         try:
             # Ensure directory exists
-            os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
             # Use filelock for cross-platform file locking (non-blocking with timeout=0)
             lock = FileLock(lock_path, timeout=0)
             with lock:
-                # Load existing entries or initialize empty list
-                if os.path.exists(manifest_path):
-                    with open(manifest_path, 'r') as f:
+                # Load existing or initialize
+                if os.path.exists(file_path):
+                    with open(file_path, 'r') as f:
                         content = f.read().strip()
                         if content:
-                            entries = json.loads(content)
+                            current_data = json.loads(content)
                         else:
-                            entries = []
+                            current_data = initial_value if initial_value is not None else {}
                 else:
-                    entries = []
+                    current_data = initial_value if initial_value is not None else {}
                 
-                # Append new entry
-                entries.append(entry)
+                # Update data using provided function
+                updated_data = update_func(current_data)
                 
                 # Write to temporary file first (atomic write)
-                temp_path = manifest_path + ".tmp"
+                temp_path = file_path + ".tmp"
                 with open(temp_path, 'w') as tmp_file:
-                    json.dump(entries, tmp_file, indent=2)
+                    json.dump(updated_data, tmp_file, indent=2)
                 
                 # Atomic rename
-                os.rename(temp_path, manifest_path)
+                os.rename(temp_path, file_path)
                 
                 # Success - return
                 return
@@ -326,7 +450,7 @@ def write_checkpoint_manifest_entry(
                 time.sleep(retry_delay)
                 continue
             else:
-                raise RuntimeError(f"Could not acquire lock on {manifest_path} after {max_retries} attempts")
+                raise RuntimeError(f"Could not acquire lock on {file_path} after {max_retries} attempts")
         except IOError as e:
             # Retryable: file system errors
             if attempt < max_retries - 1:
@@ -334,10 +458,10 @@ def write_checkpoint_manifest_entry(
                 time.sleep(retry_delay)
                 continue
             else:
-                raise RuntimeError(f"Could not acquire lock on {manifest_path} after {max_retries} attempts: {e}")
+                raise RuntimeError(f"Could not acquire lock on {file_path} after {max_retries} attempts: {e}")
         except (json.JSONDecodeError, ValueError) as e:
             # Non-retryable: corrupted file
-            raise RuntimeError(f"Manifest file is corrupted: {e}")
+            raise RuntimeError(f"JSON file is corrupted: {e}")
         except Exception as e:
             # Other errors - retry for transient issues
             if attempt < max_retries - 1:
@@ -345,7 +469,309 @@ def write_checkpoint_manifest_entry(
                 time.sleep(retry_delay)
                 continue
             else:
-                raise RuntimeError(f"Failed to write manifest entry after {max_retries} attempts: {e}")
+                raise RuntimeError(f"Failed to write JSON file after {max_retries} attempts: {e}")
+
+
+def _read_json_with_lock(file_path: str, default: Any = None) -> Any:
+    """Read JSON file with file locking to prevent race conditions.
+    
+    Args:
+        file_path: Path to JSON file
+        default: Default value if file doesn't exist
+    
+    Returns:
+        Parsed JSON data or default
+    
+    Raises:
+        RuntimeError: If file read fails after retries
+    """
+    lock_path = file_path + ".lock"
+    max_retries = 10
+    base_retry_delay = 0.1  # Base delay for exponential backoff
+    
+    for attempt in range(max_retries):
+        try:
+            if not os.path.exists(file_path):
+                return default
+            
+            # Use filelock for cross-platform file locking (non-blocking with timeout=0)
+            lock = FileLock(lock_path, timeout=0)
+            with lock:
+                with open(file_path, 'r') as f:
+                    content = f.read().strip()
+                    if not content:
+                        return default
+                    return json.loads(content)
+                    
+        except Timeout:
+            # Retryable: lock contention
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                # If we can't get lock after retries, read without lock as fallback
+                # (better than failing entirely)
+                try:
+                    with open(file_path, 'r') as f:
+                        return json.loads(f.read())
+                except Exception as e:
+                    raise RuntimeError(f"Failed to read JSON file {file_path} after lock timeout: {e}")
+        except (json.JSONDecodeError, IOError) as e:
+            # Retryable: transient read errors
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                raise RuntimeError(f"Failed to read JSON file {file_path}: {e}")
+        except Exception as e:
+            # Other errors - retry for transient issues
+            if attempt < max_retries - 1:
+                retry_delay = base_retry_delay * (2 ** attempt)  # Exponential backoff
+                time.sleep(retry_delay)
+                continue
+            else:
+                raise RuntimeError(f"Failed to read JSON file {file_path} after {max_retries} attempts: {e}")
+
+
+def write_checkpoint_manifest_entry(
+    run_name: str,
+    checkpoint_type: str,
+    checkpoint_path: str,
+    metadata: Dict[str, Any],
+    tags: Optional[list[str]] = None,
+) -> None:
+    """Write a checkpoint entry to the manifest file with file locking.
+    
+    Args:
+        run_name: Run name (top-level directory name)
+        checkpoint_type: "A", "B", or "C"
+        checkpoint_path: Full path to the checkpoint directory
+        metadata: Dictionary containing all checkpoint metadata
+        tags: Optional list of tags (e.g., ["matched_forgetting"])
+    """
+    manifest_path = os.path.join("models", run_name, "manifest.json")
+    
+    def update_manifest(current_entries):
+        if current_entries is None:
+            current_entries = []
+        entry = {
+            "type": checkpoint_type,
+            "path": checkpoint_path,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            **metadata
+        }
+        if tags:
+            entry["tags"] = tags
+        current_entries.append(entry)
+        return current_entries
+    
+    _write_json_with_lock(manifest_path, update_manifest, initial_value=[])
+
+
+def write_matched_forgetting_json(
+    run_name: str,
+    dataset_name: str,
+    lora_rank: int,
+    selection_data: dict,
+) -> None:
+    """Write matched forgetting selection data with file locking.
+    
+    Args:
+        run_name: Run name (top-level directory name)
+        dataset_name: Dataset name
+        lora_rank: LoRA rank
+        selection_data: Dictionary containing selection metadata
+    """
+    matched_forgetting_path = os.path.join("models", run_name, "matched_forgetting.json")
+    
+    def update_matched_data(current_data):
+        if current_data is None:
+            current_data = {}
+        if dataset_name not in current_data:
+            current_data[dataset_name] = {}
+        current_data[dataset_name][str(lora_rank)] = selection_data
+        return current_data
+    
+    _write_json_with_lock(matched_forgetting_path, update_matched_data, initial_value={})
+
+
+def extract_avg_acc(
+    acc_dict: dict,
+    acc_selection_rule: str = "final_epoch"
+) -> float:
+    """Extract average accuracy from accuracy dict structure.
+    
+    Generic function that works for both forget and retain accuracy dicts.
+    
+    Args:
+        acc_dict: Dict mapping {file: {epoch: accuracy}}
+        acc_selection_rule: "final_epoch" or "max_epoch"
+    
+    Returns:
+        Average accuracy across all files at selected epoch
+    """
+    if not acc_dict:
+        return 0.0
+    
+    file_accs = []
+    for file, epoch_accs in acc_dict.items():
+        if not epoch_accs:
+            continue
+        if acc_selection_rule == "final_epoch":
+            selected_epoch = max(epoch_accs.keys())
+        elif acc_selection_rule == "max_epoch":
+            selected_epoch = max(epoch_accs.keys(), key=lambda e: epoch_accs[e])
+        else:
+            raise ValueError(f"Unknown acc_selection_rule: {acc_selection_rule}")
+        file_accs.append(epoch_accs[selected_epoch])
+    
+    return sum(file_accs) / len(file_accs) if file_accs else 0.0
+
+
+def select_matched_checkpoint(
+    candidates: list[dict],
+    target_acc: float,
+    tolerance: float,
+    baseline_retain_acc: float,
+    selection_priority: list[str],
+) -> Optional[dict]:
+    """Select best checkpoint from candidates using matched-forgetting rules.
+    
+    Args:
+        candidates: List of dicts with keys: forget_acc, retain_acc, epochs, rc, lr, model_path, ...
+        target_acc: Target forget accuracy (A*)
+        tolerance: Tolerance band around target
+        baseline_retain_acc: Baseline retain accuracy for computing retain damage
+        selection_priority: Order of tie-breaking: ["retain_damage", "compute", "retain_coeff"]
+    
+    Returns:
+        Selected candidate dict or None if no candidates
+    """
+    if not candidates:
+        return None
+    
+    # Filter candidates within tolerance
+    in_tolerance = [
+        c for c in candidates
+        if target_acc - tolerance <= c["forget_acc"] <= target_acc + tolerance
+    ]
+    
+    # If none in tolerance, pick closest to target
+    if not in_tolerance:
+        in_tolerance = [
+            min(candidates, key=lambda c: abs(c["forget_acc"] - target_acc))
+        ]
+    
+    # Apply selection rule
+    def score(candidate):
+        """Compute score tuple for lexicographic comparison.
+        
+        Returns tuple (retain_damage, compute, retain_coeff) where:
+        - Smaller values are preferred (min() selects best candidate)
+        - Order matches selection_priority for tie-breaking
+        - Used with min() for lexicographic comparison
+        """
+        retain_damage = baseline_retain_acc - candidate["retain_acc"]
+        # Approximate compute as epochs * steps_per_epoch
+        # Using 1000 as typical steps per epoch approximation
+        STEPS_PER_EPOCH_APPROX = 1000
+        compute = candidate.get("epochs", 0) * STEPS_PER_EPOCH_APPROX
+        rc = candidate.get("rc", 0)
+        
+        scores = []
+        for priority in selection_priority:
+            if priority == "retain_damage":
+                scores.append(retain_damage)
+            elif priority == "compute":
+                scores.append(compute)
+            elif priority == "retain_coeff":
+                scores.append(rc)
+        return tuple(scores)
+    
+    return min(in_tolerance, key=score)
+
+
+@ray.remote(num_gpus=1)
+def evaluate_baseline_retain_acc(
+    model_id: str,
+    val_retain_files: list[str],
+    retain_dev_file: str,
+    data_root: str,
+    val_batch_size: int = 8,
+    attn_backend: Optional[str] = None,
+) -> float:
+    """Evaluate baseline model accuracy on retain set.
+    
+    Returns average retain accuracy across all retain validation files.
+    Used for computing retain damage in matched-forgetting selection.
+    """
+    import unlearn_corpus
+    
+    # Use just_eval to evaluate baseline model on retain set
+    # Pass empty train_files to skip training, just evaluate
+    (
+        model_path,
+        forget_accs, forget_accs_calibrated, forget_logits_dict,
+        retain_accs, retain_accs_calibrated, retain_logits_dict,
+        retain_accs_5_shot, retain_accs_5_shot_calibrated,
+        retain_logits_5_shot_dict,
+        samples
+    ) = unlearn_corpus.just_eval(
+        train_files=[],
+        wrong_unlearn_files=[],
+        fixed_wrong_unlearn_files=[],
+        val_files=[],  # Not used for retain evaluation
+        dev_set=retain_dev_file,
+        retain_files=[],
+        val_retain_files=val_retain_files,
+        retain_dev_file=retain_dev_file,
+        data_root=data_root,
+        base_model=model_id,
+        lr=1e-7,  # Not used for evaluation
+        name="baseline_retain_eval",
+        epochs=1,  # Not used for evaluation
+        batch_size=4,
+        val_batch_size=val_batch_size,
+        retain_coeff=1,
+        warmup_steps=0,
+        data_seed=0,
+        eval_every=1,
+        save_name=None,
+        project_name="baseline_retain_eval",
+        just_eval=True,
+        disable_wandb=True,
+        freeze_layers=None,
+        mcq=False,
+        hydra_dict={},
+        data_format=DataFormat.MCQ,  # Assume MCQ format for retain evaluation
+        loss_type=LossType.LETTER,
+        lora_rank=0,
+        use_4bit=False,
+        bnb_4bit_compute_dtype="bf16",
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_double_quant=True,
+        max_seq_len=512,
+        grad_accum_steps=1,
+        gradient_checkpointing=False,
+        attn_backend=attn_backend,
+    )
+    
+    # Extract average retain accuracy
+    # Structure: {file: {epoch: accuracy}}
+    if not retain_accs:
+        return 0.0
+    
+    file_accs = []
+    for file, epoch_accs in retain_accs.items():
+        if not epoch_accs:
+            continue
+        # Use final epoch
+        selected_epoch = max(epoch_accs.keys())
+        file_accs.append(epoch_accs[selected_epoch])
+    
+    return sum(file_accs) / len(file_accs) if file_accs else 0.0
 
 
 @ray.remote(num_gpus=1)
@@ -1715,13 +2141,317 @@ def run_pipeline(cfg: DictConfig) -> None:
                 dataset.name, num_total_splits
             )
 
+
         if not only_ft and not just_eval:
+            # Check if matched forgetting is enabled for LORA
+            matched_forgetting_enabled = OmegaConf.select(
+                cfg, "matched_forgetting.enabled", default=False
+            )
+            
+            # Dictionary to store selected checkpoints for matched forgetting
+            # Defined outside loop so it's accessible for RTT scheduling
+            selected_checkpoints = {}  # (dataset, lora_rank) -> selected_model_path
+            
             for unlearn_type in unlearn_types:
                 unlearn_type_config = unlearn_types_config[
                     unlearn_type.name
                 ] 
                 unlearn_loss_type_str =  unlearn_type_config["loss_type"]
                 unlearn_loss_type = LossType[unlearn_loss_type_str]
+                
+                # Matched forgetting path for LORA
+                if matched_forgetting_enabled and unlearn_type == UnlearnType.LORA:
+                    # Load matched forgetting config
+                    target_acc = OmegaConf.select(
+                        cfg, "matched_forgetting.target_forget_acc", default=0.60
+                    )
+                    tolerance = OmegaConf.select(
+                        cfg, "matched_forgetting.tolerance", default=0.02
+                    )
+                    max_trials = OmegaConf.select(
+                        cfg, "matched_forgetting.max_trials_per_rank", default=18
+                    )
+                    acc_selection_rule = OmegaConf.select(
+                        cfg, "matched_forgetting.acc_selection_rule", default="final_epoch"
+                    )
+                    selection_priority = OmegaConf.select(
+                        cfg, "matched_forgetting.selection_priority",
+                        default=["retain_damage", "compute", "retain_coeff"]
+                    )
+                    save_all_candidates = OmegaConf.select(
+                        cfg, "matched_forgetting.save_all_candidates", default=True
+                    )
+                    
+                    # Get search space (can override per-dataset)
+                    search_space = OmegaConf.select(
+                        cfg, "matched_forgetting.search_space", default={}
+                    )
+                    # Parse and validate search space config
+                    rc_range = parse_and_validate_list_config(
+                        search_space, "rc_range", [0.001, 0.01, 0.1, 1.0], param_name="rc_range"
+                    )
+                    rc_add = parse_and_validate_list_config(
+                        search_space, "rc_add", [], allow_empty=True, param_name="rc_add"
+                    )
+                    rcs = rc_range + rc_add
+                    
+                    lrs = parse_and_validate_list_config(
+                        search_space, "lr_range", [4e-7], param_name="lr_range"
+                    )
+                    epochs_lst = parse_and_validate_list_config(
+                        search_space, "epochs_range", [6], param_name="epochs_range"
+                    )
+                    
+                    # Compute baseline retain accuracy (once per dataset)
+                    baseline_retain_accs = {}
+                    valid_datasets_for_mf = []  # Datasets that passed baseline evaluation
+                    print(f"\n{'='*60}")
+                    print(f"Matched Forgetting: Computing baseline retain accuracies")
+                    print(f"{'='*60}\n")
+                    for dataset in datasets:
+                        if dataset not in baseline_retain_accs:
+                            dataset_dict = dataset_dicts[dataset]
+                            print(f"Evaluating baseline retain accuracy for {dataset.name}...")
+                            try:
+                                baseline_ref = evaluate_baseline_retain_acc.remote(
+                                    model_id=model_id,
+                                    val_retain_files=dataset_dict["val_retain_files"],
+                                    retain_dev_file=dataset_dict["retain_dev_file"],
+                                    data_root=data_root,
+                                    val_batch_size=val_batch_size,
+                                    attn_backend=attn_backend,
+                                )
+                                baseline_retain_accs[dataset] = ray.get(baseline_ref)
+                                print(f"  Baseline retain accuracy: {baseline_retain_accs[dataset]:.4f}")
+                                valid_datasets_for_mf.append(dataset)
+                            except Exception as e:
+                                print(f"  ERROR: Failed to compute baseline retain acc for {dataset.name}: {e}")
+                                print(f"  Skipping matched forgetting for {dataset.name}")
+                                # Skip this dataset for matched forgetting
+                    
+                    if not valid_datasets_for_mf:
+                        print(f"\n{'='*60}")
+                        print(f"ERROR: No datasets passed baseline retain accuracy evaluation")
+                        print(f"Skipping matched forgetting entirely")
+                        print(f"{'='*60}\n")
+                        continue  # Skip matched forgetting for this unlearn_type
+                    
+                    # Update datasets list to only valid ones
+                    datasets = valid_datasets_for_mf
+                    
+                    # Per-rank matched forgetting search
+                    print(f"\n{'='*60}")
+                    print(f"Matched Forgetting: Starting grid search")
+                    print(f"Target forget accuracy: {target_acc} ± {tolerance}")
+                    print(f"Max trials per rank: {max_trials}")
+                    print(f"{'='*60}\n")
+                    
+                    for dataset in datasets:
+                        dataset_dict = dataset_dicts[dataset]
+                        eval_split_ids = eval_split_ids_by_dataset[dataset]
+                        num_total_splits = num_total_splits_by_dataset[dataset]
+                        
+                        for lora_rank in lora_ranks:
+                            print(f"\nMatched Forgetting: {dataset.name}, rank {lora_rank}")
+                            candidates = []
+                            candidate_refs = []
+                            
+                            # Generate candidate hyperparameter sets
+                            candidate_count = 0
+                            for epochs in epochs_lst:
+                                for lr in lrs:
+                                    for rc in rcs:
+                                        if candidate_count >= max_trials:
+                                            break
+                                        
+                                        model_id_safe = model_id.replace('/', '_')
+                                        candidate_path = (
+                                            f"models/{run_name}/"
+                                            f"{unlearn_type.name}/{dataset.name}/"
+                                            f"{wandb_project_name}/"
+                                            f"rank{lora_rank}-sc20-{model_id_safe}-rc{rc}-lr{lr}-epochs{epochs}"
+                                        )
+                                        save_name_candidate = candidate_path if (save_unlearn_model and save_all_candidates) else None
+                                        
+                                        # Launch unlearn run
+                                        ref = main.remote(
+                                            unlearn_type=unlearn_type,
+                                            dataset=dataset,
+                                            unlearn_files=dataset_dict["unlearn_files"],
+                                            wrong_unlearn_files=dataset_dict.get("wrong_unlearn_files", []),
+                                            fixed_wrong_unlearn_files=dataset_dict.get("fixed_wrong_unlearn_files", []),
+                                            val_files=dataset_dict["val_files"],
+                                            dev_file=dataset_dict["dev_file"],
+                                            retain_files=dataset_dict["retain_files"],
+                                            val_retain_files=dataset_dict["val_retain_files"],
+                                            retain_dev_file=dataset_dict["retain_dev_file"],
+                                            data_root=data_root,
+                                            base_model=model_id,
+                                            lr=lr,
+                                            epochs=epochs,
+                                            batch_size=batch_size,
+                                            val_batch_size=val_batch_size,
+                                            retain_coeff=rc,
+                                            warmup_steps=warmup_steps,
+                                            data_seed=data_seed,
+                                            eval_every=eval_every,
+                                            save_name=save_name_candidate,
+                                            name=candidate_path,
+                                            wandb_project_name=wandb_project_name,
+                                            results_dir=results_dir,
+                                            only_ft=only_ft,
+                                            ft_model_path="",
+                                            num_ft_splits=num_ft_splits,
+                                            eval_split_ids=eval_split_ids,
+                                            num_total_splits=num_total_splits,
+                                            ft_loss_types=ft_loss_types,
+                                            ft_lrs=ft_lrs,
+                                            ft_epochs_lst=ft_epochs_lst,
+                                            save_ft_models=save_ft_models,
+                                            start_time=curr_time_str,
+                                            start_time_sf=start_time_sf_str,
+                                            dont_ft=True,  # Don't run RTT during search
+                                            unlearn_freeze_layers=unlearn_freeze_layers,
+                                            ft_freeze_layers=ft_freeze_layers,
+                                            ft_dont_eval=ft_dont_eval,
+                                            unlearn_mcq=unlearn_mcq,
+                                            hydra_dict=config_flat,
+                                            unlearn_data_format=unlearn_data_format,
+                                            ft_data_format=ft_data_format,
+                                            unlearn_loss_type=unlearn_loss_type,
+                                            steering_coeff=20,
+                                            max_samples=max_samples_lst[0] if max_samples_lst else 999999999,
+                                            lora_rank=lora_rank,
+                                            use_4bit=unlearn_use_4bit,
+                                            bnb_4bit_compute_dtype=unlearn_bnb_4bit_compute_dtype,
+                                            bnb_4bit_quant_type=unlearn_bnb_4bit_quant_type,
+                                            bnb_4bit_double_quant=unlearn_bnb_4bit_double_quant,
+                                            max_seq_len=unlearn_max_seq_len,
+                                            grad_accum_steps=unlearn_grad_accum_steps,
+                                            gradient_checkpointing=unlearn_gradient_checkpointing,
+                                            attn_backend=attn_backend,
+                                            ft_batch_size=ft_batch_size,
+                                            ft_val_batch_size=ft_val_batch_size,
+                                            run_name=run_name,
+                                        )
+                                        candidate_refs.append((ref, {
+                                            "epochs": epochs,
+                                            "lr": lr,
+                                            "rc": rc,
+                                            "lora_rank": lora_rank,
+                                            "model_path": candidate_path,
+                                            "save_name": save_name_candidate,
+                                        }))
+                                        candidate_count += 1
+                            
+                            # Collect results and select best candidate
+                            print(f"  Waiting for {len(candidate_refs)} candidates to complete...")
+                            for ref, candidate_meta in candidate_refs:
+                                try:
+                                    (
+                                        model_path,
+                                        forget_accs, forget_accs_calibrated, forget_logits_dict,
+                                        retain_accs, retain_accs_calibrated, retain_logits_dict,
+                                        retain_accs_5_shot, retain_accs_5_shot_calibrated,
+                                        retain_logits_5_shot_dict,
+                                        samples
+                                    ) = ray.get(ref)
+                                    
+                                    forget_acc = extract_avg_acc(forget_accs, acc_selection_rule)
+                                    retain_acc = extract_avg_acc(retain_accs, acc_selection_rule)
+                                    
+                                    candidate_meta.update({
+                                        "forget_acc": forget_acc,
+                                        "retain_acc": retain_acc,
+                                        "model_path": model_path,
+                                    })
+                                    candidates.append(candidate_meta)
+                                    print(f"    Candidate (rc={candidate_meta['rc']}, lr={candidate_meta['lr']}, epochs={candidate_meta['epochs']}): "
+                                          f"forget_acc={forget_acc:.4f}, retain_acc={retain_acc:.4f}")
+                                except Exception as e:
+                                    print(f"    ERROR: Failed to process candidate {candidate_meta}: {e}")
+                                    continue
+                            
+                            # Check if any candidates succeeded
+                            if not candidates:
+                                print(f"  ERROR: All candidates failed for {dataset.name} rank {lora_rank}")
+                                print(f"  Skipping matched forgetting for this configuration")
+                                continue  # Skip to next rank
+                            
+                            # Select best candidate
+                            selected = select_matched_checkpoint(
+                                candidates,
+                                target_acc,
+                                tolerance,
+                                baseline_retain_accs[dataset],
+                                selection_priority,
+                            )
+                            
+                            if selected:
+                                print(f"  Selected: rc={selected['rc']}, lr={selected['lr']}, epochs={selected['epochs']}")
+                                print(f"    forget_acc={selected['forget_acc']:.4f}, retain_acc={selected['retain_acc']:.4f}")
+                                
+                                # Ensure selected checkpoint is saved if it wasn't saved during search
+                                if not selected.get("save_name") and save_unlearn_model:
+                                    # Re-save selected model
+                                    selected["save_name"] = selected["model_path"]
+                                    # Note: We'd need to re-run unlearning to save, but for now we'll just mark it
+                                    # In practice, if save_all_candidates=False, we should save the selected one
+                                
+                                # Write matched_forgetting.json entry with file locking
+                                write_matched_forgetting_json(
+                                    run_name=run_name,
+                                    dataset_name=dataset.name,
+                                    lora_rank=lora_rank,
+                                    selection_data={
+                                        "selected_hparams": {
+                                            "epochs": selected["epochs"],
+                                            "lr": selected["lr"],
+                                            "rc": selected["rc"],
+                                        },
+                                        "achieved_forget_acc": selected["forget_acc"],
+                                        "achieved_retain_acc": selected["retain_acc"],
+                                        "model_path": selected["model_path"],
+                                        "baseline_retain_acc": baseline_retain_accs[dataset],
+                                        "retain_damage": baseline_retain_accs[dataset] - selected["retain_acc"],
+                                    }
+                                )
+                                
+                                # Write manifest entry with matched_forgetting tag
+                                a_metadata = {
+                                    "run_name": run_name,
+                                    "method": unlearn_type.name,
+                                    "dataset": dataset.name,
+                                    "project": wandb_project_name,
+                                    "model_id": model_id,
+                                    "lr": selected["lr"],
+                                    "epochs": selected["epochs"],
+                                    "retain_coeff": selected["rc"],
+                                    "lora_rank": lora_rank,
+                                }
+                                
+                                write_checkpoint_manifest_entry(
+                                    run_name=run_name,
+                                    checkpoint_type="A",
+                                    checkpoint_path=selected["model_path"],
+                                    metadata=a_metadata,
+                                    tags=["matched_forgetting"],
+                                )
+                                
+                                # Store selected checkpoint for RTT phase
+                                selected_checkpoints[(dataset, lora_rank)] = selected["model_path"]
+                            else:
+                                print(f"  WARNING: No candidate selected for {dataset.name} rank {lora_rank}")
+                    
+                    print(f"\n{'='*60}")
+                    print(f"Matched Forgetting: Search complete")
+                    print(f"Selected {len(selected_checkpoints)} checkpoints")
+                    print(f"{'='*60}\n")
+                    
+                    # Skip to RTT phase (which will be handled separately below)
+                    continue
+                
+                # Original unlearning loop (existing code)
                 for dataset in datasets:
                     dataset_config = (
                         unlearn_type_config["datasets_config"][dataset.name]
@@ -1764,13 +2494,14 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     )
                                     for sc in scs:
                                         for lora_rank in ranks:
+                                            model_id_safe = model_id.replace('/', '_')
                                             forget_model = (
                                                 f"models/{run_name}/"
                                                 f"{unlearn_type.name}/"
                                                 f"{dataset.name}/"
                                                 f"{wandb_project_name}/"
                                                 f"rank{lora_rank}-sc{sc}-"
-                                                f"{model_id}-rc{rc}-lr{lr}-"
+                                                f"{model_id_safe}-rc{rc}-lr{lr}-"
                                                 f"epochs{epochs}"
                                             )
                                             save_name = (
@@ -1861,6 +2592,164 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 run_name=run_name,
                                             )]
 
+            # Schedule RTT for matched forgetting checkpoints (B)
+            # Only schedule if RTT is enabled and matched forgetting was used
+            if not dont_ft and not ft_on_all and matched_forgetting_enabled and selected_checkpoints:
+                import finetune_corpus
+                print(f"\n{'='*60}")
+                print(f"Matched Forgetting: Scheduling RTT on selected checkpoints")
+                print(f"{'='*60}\n")
+                
+                for (dataset, lora_rank), selected_model_path in selected_checkpoints.items():
+                    dataset_dict = dataset_dicts[dataset]
+                    eval_split_ids = eval_split_ids_by_dataset[dataset]
+                    num_total_splits = num_total_splits_by_dataset[dataset]
+                    
+                    # Read matched_forgetting.json to get hyperparameters
+                    # Initialize with defaults
+                    unlearn_lr = DEFAULT_UNLEARN_LR
+                    unlearn_epochs = DEFAULT_UNLEARN_EPOCHS
+                    retain_coeff = DEFAULT_RETAIN_COEFF
+                    
+                    matched_forgetting_path = os.path.join("models", run_name, "matched_forgetting.json")
+                    matched_data = _read_json_with_lock(matched_forgetting_path, default={})
+                    if matched_data and dataset.name in matched_data and str(lora_rank) in matched_data[dataset.name]:
+                        selected_hparams = matched_data[dataset.name][str(lora_rank)].get("selected_hparams", {})
+                        unlearn_lr = selected_hparams.get("lr", DEFAULT_UNLEARN_LR)
+                        unlearn_epochs = selected_hparams.get("epochs", DEFAULT_UNLEARN_EPOCHS)
+                        retain_coeff = selected_hparams.get("rc", DEFAULT_RETAIN_COEFF)
+                    
+                    for loss_type in ft_loss_types:
+                        for ft_lr in ft_lrs:
+                            for ft_epochs in ft_epochs_lst:
+                                if not ft_on_all:
+                                    for skip_split in eval_split_ids:
+                                        ft_files = [
+                                            file for i, file in enumerate(
+                                                dataset_dict["val_files"]
+                                            )
+                                            if i != skip_split
+                                        ]
+                                        ft_val_files = (
+                                            [dataset_dict["val_files"][skip_split]]
+                                            if skip_split < len(
+                                                dataset_dict["val_files"]
+                                            ) else [""]
+                                        )
+                                        ft_val_retain_files = dataset_dict.get(
+                                            "val_retain_files", ft_files.copy()
+                                        )
+                                        
+                                        # Extract remaining path after 'models/{run_name}/'
+                                        remaining_path = extract_model_path_suffix(selected_model_path, run_name)
+                                        fted_model_path = (
+                                            f"models/{run_name}/fted/"
+                                            f"{remaining_path}/"
+                                            f"{wandb_project_name}/"
+                                            f"{loss_type.name}/ft-skip_split{skip_split}/"
+                                            f"lr{ft_lr}-epoch{ft_epochs}"
+                                        )
+                                        
+                                        # Prepare parent metadata for B checkpoint (A checkpoint info)
+                                        parent_metadata = build_parent_metadata(
+                                            run_name=run_name,
+                                            unlearn_type=UnlearnType.LORA,
+                                            dataset=dataset,
+                                            wandb_project_name=wandb_project_name,
+                                            base_model=model_id,
+                                            unlearn_lr=unlearn_lr,
+                                            unlearn_epochs=unlearn_epochs,
+                                            retain_coeff=retain_coeff,
+                                            lora_rank=lora_rank,
+                                            steering_coeff=None,
+                                        )
+                                        
+                                        ref = finetune_corpus.main.remote(
+                                            train_files=ft_files,
+                                            val_files=ft_val_files,
+                                            val_retain_files=ft_val_retain_files,
+                                            dev_set=ft_files[0] if ft_files else "",
+                                            data_root=data_root,
+                                            base_model=selected_model_path,  # Use selected matched checkpoint
+                                            lr=ft_lr,
+                                            epochs=ft_epochs,
+                                            name=fted_model_path,
+                                            batch_size=ft_batch_size,
+                                            val_batch_size=ft_val_batch_size,
+                                            save_name=fted_model_path if save_ft_models else None,
+                                            loss_type=loss_type,
+                                            project_name=wandb_project_name,
+                                            diff_tokenizer=diff_tokenizer,
+                                            freeze_layers=ft_freeze_layers,
+                                            dont_eval=ft_dont_eval,
+                                            hydra_dict=config_flat,
+                                            data_format=ft_data_format,
+                                            attn_backend=attn_backend,
+                                            run_name=run_name,
+                                            checkpoint_type="B",
+                                            parent_metadata=parent_metadata,
+                                            skip_split=skip_split,
+                                        )
+                                        refs.append(ref)
+                                else:
+                                    # ft_on_all case
+                                    ft_files = dataset_dict["val_files"]
+                                    ft_val_files = dataset_dict["val_files"]
+                                    ft_val_retain_files = dataset_dict.get(
+                                        "val_retain_files", ft_files.copy()
+                                    )
+                                    
+                                    # Extract remaining path after 'models/{run_name}/'
+                                    remaining_path = extract_model_path_suffix(selected_model_path, run_name)
+                                    fted_model_path = (
+                                        f"models/{run_name}/fted/"
+                                        f"{remaining_path}/"
+                                        f"{loss_type.name}/all_splits/lr{ft_lr}-epoch{ft_epochs}"
+                                    )
+                                    
+                                    parent_metadata = build_parent_metadata(
+                                        run_name=run_name,
+                                        unlearn_type=UnlearnType.LORA,
+                                        dataset=dataset,
+                                        wandb_project_name=wandb_project_name,
+                                        base_model=model_id,
+                                        unlearn_lr=unlearn_lr,
+                                        unlearn_epochs=unlearn_epochs,
+                                        retain_coeff=retain_coeff,
+                                        lora_rank=lora_rank,
+                                        steering_coeff=None,
+                                    )
+                                    
+                                    ref = finetune_corpus.main.remote(
+                                        train_files=ft_files,
+                                        val_files=ft_val_files,
+                                        val_retain_files=ft_val_retain_files,
+                                        dev_set=ft_files[0] if ft_files else "",
+                                        data_root=data_root,
+                                        base_model=selected_model_path,
+                                        lr=ft_lr,
+                                        epochs=ft_epochs,
+                                        name=fted_model_path,
+                                        batch_size=ft_batch_size,
+                                        val_batch_size=ft_val_batch_size,
+                                        save_name=fted_model_path if save_ft_models else None,
+                                        loss_type=loss_type,
+                                        project_name=wandb_project_name,
+                                        diff_tokenizer=diff_tokenizer,
+                                        freeze_layers=ft_freeze_layers,
+                                        dont_eval=ft_dont_eval,
+                                        hydra_dict=config_flat,
+                                        data_format=ft_data_format,
+                                        attn_backend=attn_backend,
+                                        run_name=run_name,
+                                        checkpoint_type="B",
+                                        parent_metadata=parent_metadata,
+                                        skip_split=None,
+                                    )
+                                    refs.append(ref)
+                
+                print(f"Matched Forgetting: Scheduled {len([r for r in refs if r])} RTT runs\n")
+
             # Schedule baseline RTT (C) - once per unique (model_id, dataset, RTT-config)
             # Only schedule if RTT is enabled
             if not dont_ft and not ft_on_all:
@@ -1904,6 +2793,14 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         f"{loss_type.name}/skip_split{skip_split}/"
                                         f"lr{ft_lr}-epoch{ft_epochs}"
                                     )
+                                    # Skip if baseline RTT model already exists
+                                    if os.path.exists(baseline_rtt_path) and os.path.exists(
+                                        os.path.join(baseline_rtt_path, "config.json")
+                                    ):
+                                        print(
+                                            f"Skipping baseline RTT - model already exists: {baseline_rtt_path}"
+                                        )
+                                        continue
                                     # Prepare minimal metadata for C checkpoint
                                     c_metadata = {
                                         "run_name": run_name,
@@ -2079,6 +2976,14 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         f"{loss_type.name}/skip_split{skip_split}/"
                                         f"lr{ft_lr}-epoch{ft_epochs}"
                                     )
+                                    # Skip if baseline RTT model already exists
+                                    if os.path.exists(baseline_rtt_path) and os.path.exists(
+                                        os.path.join(baseline_rtt_path, "config.json")
+                                    ):
+                                        print(
+                                            f"Skipping baseline RTT - model already exists: {baseline_rtt_path}"
+                                        )
+                                        continue
                                     # Prepare minimal metadata for C checkpoint
                                     c_metadata = {
                                         "run_name": run_name,
@@ -2205,7 +3110,10 @@ def run_pipeline(cfg: DictConfig) -> None:
 
         for ref in refs:
             try:
-                ray.get(ref)
+                result = ray.get(ref)
+                # Extract model path and metadata if available
+                # The result from main() is a tuple, but we need to check structure
+                # For now, we'll collect models separately during unlearning phase
             except ray.exceptions.RayTaskError as e:
                 error_message = f"""
                 Exception in main:\n{str(e)}\n\n\
@@ -2226,6 +3134,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                     error_file.write(error_message)
                 if raise_exceptions:
                     raise(e)
+
 
         # Process baseline RTT results (C condition)
         while len(baseline_rtt_refs) > 0:

@@ -53,7 +53,7 @@ unlearn:
   types: [LORA]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
-  lora_ranks: [16, 32, 64]
+  lora_ranks: [16, 32, 48]
   use_4bit: false  # Disabled for faster training (LoRA instead of QLoRA)
   bnb_4bit_quant_type: nf4
   bnb_4bit_compute_dtype: bf16
@@ -315,6 +315,20 @@ unlearn:
             range: ${get_log_range:1e-3, 1e3, 10}
             add: [0, 2, 4]
 
+matched_forgetting:
+  enabled: false
+  target_forget_acc: 0.60
+  tolerance: 0.02  # ±0.02 around target
+  max_trials_per_rank: 18
+  search_space:
+    rc_range: ${get_log_range:0.001, 10.0, 3}  # [0.001, 0.01, 0.1, 1.0, 10.0]
+    rc_add: [0.01, 0.1, 1.0]  # Additional hand-picked values
+    lr_range: [2e-7, 4e-7, 8e-7]  # Can override per-dataset
+    epochs_range: [3, 5, 6]  # Can override per-dataset
+  selection_priority: ["retain_damage", "compute", "retain_coeff"]  # Tie-breaking order
+  acc_selection_rule: final_epoch  # "final_epoch" or "max_epoch"
+  save_all_candidates: true  # Save all candidates during search (Option 1)
+
 ft:
   num_splits: 1
   eval_split_ids: null
@@ -327,9 +341,6 @@ ft:
   lrs: [1e-6]
   save_models: true # save models for later use
   # Separate batch sizes for RTT to avoid OOM when running in parallel
-  batch_size: 8  
-  val_batch_size: 16 
-
 
 hydra:
   run:

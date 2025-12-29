@@ -1,0 +1,7 @@
+model_path,base_model,lora_rank,dataset_name,ordering_acc,arithmetic_acc,classification_acc,overall_acc,ordering_count,arithmetic_count,classification_count,total_count,timestamp,start_time_sf
+Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen2.5-3B-Instruct,0,YEAR_CONCEPT,0.99,0.31,0.93,0.7433333333333333,100,100,100,300,2025-12-29-14-22-01,2025-12-29-06-22-01
+models/2025-12-28_05-13-18/LORA/YEARS/lora_years_qwen_3b/rank16-sc20-Qwen/Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6,Qwen/Qwen2.5-3B-Instruct,16,YEAR_CONCEPT,0.99,0.26,0.88,0.71,100,100,100,300,2025-12-29-14-22-07,2025-12-29-06-22-07
+models/2025-12-28_05-13-18/LORA/YEARS/lora_years_qwen_3b/rank32-sc20-Qwen/Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6,Qwen/Qwen2.5-3B-Instruct,32,YEAR_CONCEPT,0.99,0.28,0.88,0.7166666666666667,100,100,100,300,2025-12-29-14-22-14,2025-12-29-06-22-14
+models/2025-12-28_05-13-18/LORA/YEARS/lora_years_qwen_3b/rank64-sc20-Qwen/Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6,Qwen/Qwen2.5-3B-Instruct,64,YEAR_CONCEPT,0.99,0.29,0.84,0.7066666666666667,100,100,100,300,2025-12-29-14-22-21,2025-12-29-06-22-21
+models/2025-12-28_05-13-18/LORA/YEARS/lora_years_qwen_3b/rank8-sc20-Qwen_Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6,Qwen/Qwen2.5-3B-Instruct,8,YEAR_CONCEPT,0.99,0.27,0.89,0.7166666666666667,100,100,100,300,2025-12-29-14-22-27,2025-12-29-06-22-27
+models/2025-12-28_05-13-18/LORA/YEARS/lora_years_qwen_3b/rank128-sc20-Qwen_Qwen2.5-3B-Instruct-rc0.001-lr4e-07-epochs6,Qwen/Qwen2.5-3B-Instruct,128,YEAR_CONCEPT,0.99,0.3,0.81,0.7,100,100,100,300,2025-12-29-14-22-33,2025-12-29-06-22-33

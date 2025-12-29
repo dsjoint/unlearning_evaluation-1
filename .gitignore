@@ -12,6 +12,7 @@ outputs/
 *.log
 logs/
 pipeline_error.log
+scripts/upload.log
 
 # Generated data (large files)
 models/
@@ -28,6 +29,11 @@ wandb/
 
 # OS
 .DS_Store
+
+# Secrets and tokens
+.hf_token
+.env
+*.token
 
 # Data artifacts (can be regenerated)
 data/MANIFEST.json

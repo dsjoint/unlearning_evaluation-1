@@ -92,6 +92,49 @@ unlearn:
 
 See `conf/default.yaml` for complete examples per method/dataset.
 
+### Matched Forgetting Configuration
+
+Matched forgetting is a selection strategy for LoRA unlearning that finds the checkpoint achieving a target forget accuracy while minimizing retain damage. Currently only supported for LoRA unlearning.
+
+```yaml
+matched_forgetting:
+  enabled: false                                    # Enable matched forgetting selection
+  target_forget_acc: 0.60                          # Target forget accuracy (A*)
+  tolerance: 0.02                                   # ±tolerance around target
+  max_trials_per_rank: 18                          # Maximum candidates to try per LoRA rank
+  search_space:
+    rc_range: ${get_log_range:0.001, 10.0, 3}     # Retain coefficient range
+    rc_add: [0.01, 0.1, 1.0]                       # Additional RC values to include
+    lr_range: [2e-7, 4e-7, 8e-7]                   # Learning rate range
+    epochs_range: [3, 5, 6]                         # Epochs range
+  selection_priority: ["retain_damage", "compute", "retain_coeff"]  # Tie-breaking order
+  acc_selection_rule: final_epoch                   # "final_epoch" or "max_epoch"
+  save_all_candidates: true                         # Save all candidates during search
+```
+
+**How it works:**
+1. For each LoRA rank, generates candidate hyperparameter combinations (epochs × lrs × rcs)
+2. Runs unlearning for each candidate (up to `max_trials_per_rank`)
+3. Selects candidate with forget accuracy closest to `target_forget_acc ± tolerance`
+4. Among candidates meeting the accuracy target, selects the one minimizing retain damage (then compute, then retain_coeff as tie-breakers)
+5. Selected checkpoints are tagged in manifest and used for RTT phase
+6. Selection results stored in `models/{run_name}/matched_forgetting.json`
+
+**Selection Priority:**
+- `retain_damage`: Minimize `baseline_retain_acc - candidate_retain_acc`
+- `compute`: Minimize training compute (epochs × steps_per_epoch)
+- `retain_coeff`: Minimize retain coefficient value
+
+**Example:**
+```bash
+python pipeline.py \
+    matched_forgetting.enabled=true \
+    matched_forgetting.target_forget_acc=0.60 \
+    matched_forgetting.tolerance=0.02 \
+    unlearn.types=[LORA] \
+    unlearn.lora_ranks=[8,16,32]
+```
+
 ---
 
 ## Changing System Resources

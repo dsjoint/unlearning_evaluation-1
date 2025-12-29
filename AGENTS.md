@@ -21,6 +21,8 @@ For data formats and materialization, see [docs/DATA.md](docs/DATA.md).
 | Run full unlearn+RTT experiment | `pipeline.py` → `run_pipeline()` (1236) | `pipeline.py`, `unlearn_corpus.py`, `finetune_corpus.py` | `conf/default.yaml` |
 | Evaluate existing model | `pipeline.py just_eval=true` | `pipeline.py:1236`, `unlearn_corpus.py:just_eval()` | `conf/default.yaml` with `just_eval=true` |
 | Fine-tune existing model | `pipeline.py only_ft=true` | `pipeline.py:1236`, `finetune_corpus.py:main()` | `conf/default.yaml` with `only_ft=true` |
+| Run year concept evaluation | `analyze_year_concept.ipynb` | `analyze_year_concept.ipynb` | Set `RUN_NAME` and `MODEL_ID` in notebook |
+| Run matched forgetting (LoRA) | `pipeline.py` with `matched_forgetting.enabled=true` | `pipeline.py`, `unlearn_corpus.py` | `conf/default.yaml` → `matched_forgetting` |
 | Add new unlearning method | `unlearn_corpus.py:main()` | `unlearn_corpus.py`, `pipeline.py:314` (unlearn router) | `conf/default.yaml` → `unlearn.types_config` |
 | Modify data loading | `unlearn_corpus.py:load_jsonl()` | `unlearn_corpus.py`, `data/requirements.py` | `data/` directory structure |
 | Change model/config | `conf/default.yaml` | All files (dynamically loaded) | `conf/*.yaml` |
@@ -35,6 +37,8 @@ For data formats and materialization, see [docs/DATA.md](docs/DATA.md).
 | `pipeline.py` | Main entry point; Hydra-based orchestration, Ray distributed execution | (`pipeline.py:1905`) `if __name__ == "__main__": run_pipeline()` |
 | `unlearn_corpus.py` | Core unlearning methods: GD, WHP, FWF, LORA | (`unlearn_corpus.py`) Contains unlearning implementations |
 | `finetune_corpus.py` | Fine-tuning for RTT (Retraining To Threshold) evaluation | (`finetune_corpus.py`) Contains fine-tuning implementations |
+| `analyze_year_concept.ipynb` | Year concept evaluation and visualization notebook | (`analyze_year_concept.ipynb`) Evaluates existing models and creates visualizations |
+| `scripts/generate_year_concept_eval.py` | Year concept dataset generator | (`scripts/generate_year_concept_eval.py`) Generates evaluation dataset |
 | `conf/` | Hydra configuration files (YAML) | (`pipeline.py:1236`) `@hydra.main(config_path="conf", ...)` |
 | `conf/default.yaml` | Default experiment configuration | (`conf/default.yaml`) |
 | `data/` | Dataset directory containing all JSONL data files | See [DATA.md](DATA.md) |
@@ -72,6 +76,7 @@ The pipeline supports three main modes controlled by config flags:
 | `unlearn_corpus.py` | `main()` | Direct unlearning (GD/WHP/FWF/LORA) | (`unlearn_corpus.py`) |
 | `unlearn_corpus.py` | `just_eval()` | Evaluation-only remote function | (`unlearn_corpus.py`) |
 | `finetune_corpus.py` | `main()` | Direct fine-tuning | (`finetune_corpus.py`) |
+| `analyze_year_concept.ipynb` | Evaluation + visualization | Year concept evaluation and analysis | (`analyze_year_concept.ipynb`) |
 | `pipeline.py` | `evaluate_baseline_model()` | Baseline model pre-flight check | (`pipeline.py:212`) |
 | `pipeline.py` | `main()` | Remote function for unlearning + RTT | (`pipeline.py:510`) |
 | `pipeline.py` | `unlearn()` | Router to unlearning implementations | (`pipeline.py:314`) |
@@ -94,7 +99,7 @@ The pipeline supports three main modes controlled by config flags:
 6. **RTT Phase** (if `dont_ft=false`): For each fine-tuning configuration:
    - Call `finetune_corpus.main()` remote function (both unlearned and baseline models)
    - Results returned from remote functions
-7. **Cleanup**: Ray shutdown (`pipeline.py:1897`)
+8. **Cleanup**: Ray shutdown (`pipeline.py:1897`)
 
 ### Pipeline Stages with Code Locations
 
@@ -255,6 +260,8 @@ User Invocation (CLI)
 | Unlearning Metrics | Returned from `main()` remote function | Analysis | dict | Returned from Ray remote functions | `results_dir` | (`pipeline.py:510`) |
 | Fine-tuning Metrics | Returned from `finetune_corpus.main()` | Analysis | dict | Returned from Ray remote functions | `results_dir` | (`finetune_corpus.py`) |
 | Baseline Evaluation | `evaluate_baseline_model()` | Pre-flight check | dict | In-memory (returned from remote function) | `baseline_min_forget_acc` | (`pipeline.py:212`) |
+| Year Concept Dataset | `scripts/generate_year_concept_eval.py` | Year concept evaluation | JSONL | `data/year_concept_eval/year_concept.jsonl` | N/A | (`scripts/generate_year_concept_eval.py`) |
+| Year Concept Metrics | `analyze_year_concept.ipynb` | Analysis | CSV | `evals/pipeline/year_concept/{timestamp}--num{i}.csv` | `RUN_NAME`, `MODEL_ID` in notebook | (`analyze_year_concept.ipynb`, `pipeline.py:260-316`) |
 | Checkpoint Manifest | `write_checkpoint_manifest_entry()` | Analysis | JSON | `models/{run_name}/manifest.json` | `run_name` | (`pipeline.py:214-293`) |
 | Data Manifest | Manual/External | Analysis | JSON | `data/MANIFEST.json` | `data_root` | See [DATA.md](DATA.md) |
 | WandB Logs | `wandb.log()` | Monitoring | WandB | N/A | `wandb_project_name` | (`unlearn_corpus.py:699-712`) |
@@ -460,8 +467,14 @@ models/2024-12-25_14-30-00/baseline_rtt/YEARS/TinyLlama_TinyLlama-1.1B-Chat-v1.0
 - `evals/pipeline/unlearning/{timestamp}--num{i}.csv` - Unlearning metrics (Condition A)
 - `evals/pipeline/ft/{timestamp}--num{i}.csv` - Fine-tuning metrics (Conditions B and C)
 - `evals/pipeline/summary/{timestamp}.csv` - Summary CSV with A/B/C stats (if generated)
+- `evals/pipeline/year_concept/{timestamp}--num{i}.csv` - Year concept evaluation metrics (generated by `analyze_year_concept.ipynb`)
 
 **Config key:** `results_dir` (default: `"evals/pipeline"`)
+
+**Year Concept CSV Format:**
+- Columns: `model_path`, `base_model`, `lora_rank`, `dataset_name`, `ordering_acc`, `arithmetic_acc`, `classification_acc`, `overall_acc`, `ordering_count`, `arithmetic_count`, `classification_count`, `total_count`, `timestamp`, `start_time_sf`
+- Generated by: `analyze_year_concept.ipynb` (calls `write_year_concept_csv()` from `pipeline.py:260-316`)
+- Condition: Generated when running `analyze_year_concept.ipynb` evaluation cell
 
 ---
 
@@ -487,7 +500,9 @@ models/2024-12-25_14-30-00/baseline_rtt/YEARS/TinyLlama_TinyLlama-1.1B-Chat-v1.0
 | **Unlearned Models** | `models/{run_name}/{method}/{dataset}/{project}/rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/` | Unlearning phase completes | `unlearn.save_unlearn_model` |
 | **Fine-tuned Models (B)** | `models/{run_name}/fted/{method}/{dataset}/{project}/{loss_type}/ft-skip_split{skip}/lr{lr}-epoch{epochs}/` | RTT phase completes | `ft.save_models` |
 | **Baseline RTT Models (C)** | `models/{run_name}/baseline_rtt/{dataset}/{model_id}/{loss_type}/skip_split{skip}/lr{lr}-epoch{epochs}/` | Baseline RTT completes | `ft.save_models` |
-| **Checkpoint Manifest** | `models/{run_name}/manifest.json` | When any checkpoint is saved | Automatic (always written) | (`pipeline.py:214-293`) |
+| **Checkpoint Manifest** | `models/{run_name}/manifest.json` | When any checkpoint is saved | Automatic (always written) | (`pipeline.py:538-570`) |
+| **Matched Forgetting JSON** | `models/{run_name}/matched_forgetting.json` | Matched forgetting selection completes | `matched_forgetting.enabled=true` | (`pipeline.py:573-597`) |
+| **Year Concept CSV** | `evals/pipeline/year_concept/{timestamp}--num{i}.csv` | Year concept evaluation completes | Run `analyze_year_concept.ipynb` | (`analyze_year_concept.ipynb`, `pipeline.py:332-391`) |
 | **Error Logs** | `pipeline_error.log` | Any exception occurs | N/A (always written) |
 | **WandB Logs** | Remote + `~/.wandb/` | Training/evaluation runs | `wandb_project_name` |
 | **Hydra Outputs** | `outputs/{date}/{time}/` | Pipeline starts | Hydra default |
@@ -690,6 +705,98 @@ python pipeline.py \
 ```
 **Evidence:** (`pipeline.py:385`) `dont_ft: bool = False`
 
+### (e.1) Run Matched Forgetting (LoRA)
+
+Run matched-forgetting selection for LoRA unlearning. For each LoRA rank, performs a grid search over hyperparameters, selects the checkpoint that achieves forget accuracy closest to target (default: 0.60 ± 0.02), then minimizes retain damage.
+
+```bash
+python pipeline.py \
+    datasets=[YEARS] \
+    unlearn.types=[LORA] \
+    unlearn.lora_ranks=[8,16,32] \
+    model_id="Qwen/Qwen2.5-3B-Instruct" \
+    matched_forgetting.enabled=true \
+    matched_forgetting.target_forget_acc=0.60 \
+    matched_forgetting.tolerance=0.02 \
+    matched_forgetting.max_trials_per_rank=18 \
+    wandb_project_name="matched_forgetting_experiment"
+```
+
+**Key Features:**
+- Grid search over `rc_range`, `lr_range`, `epochs_range` (up to `max_trials_per_rank` candidates)
+- Selects checkpoint with forget accuracy closest to target (minimizing retain damage as tie-breaker)
+- Selected checkpoints are tagged with `["matched_forgetting"]` in manifest
+- Selection results stored in `models/{run_name}/matched_forgetting.json`
+- RTT phase automatically runs on selected checkpoints (if `dont_ft=false`)
+
+**Configuration:**
+```yaml
+matched_forgetting:
+  enabled: false
+  target_forget_acc: 0.60
+  tolerance: 0.02
+  max_trials_per_rank: 18
+  search_space:
+    rc_range: ${get_log_range:0.001, 10.0, 3}
+    rc_add: [0.01, 0.1, 1.0]
+    lr_range: [2e-7, 4e-7, 8e-7]
+    epochs_range: [3, 5, 6]
+  selection_priority: ["retain_damage", "compute", "retain_coeff"]
+  acc_selection_rule: final_epoch
+  save_all_candidates: true
+```
+
+**Outputs:**
+- `models/{run_name}/matched_forgetting.json` - Selection results with hyperparameters
+- Selected checkpoints in `models/{run_name}/LORA/{dataset}/...` tagged in manifest
+- RTT checkpoints (B) generated from selected matched forgetting checkpoints (A)
+
+**Evidence:** (`pipeline.py:2050-2365`) for matched forgetting implementation
+
+---
+
+### (e.2) Run Year Concept Evaluation
+
+Evaluate general year understanding (ordering, arithmetic, classification) on existing unlearned models.
+
+**Workflow:**
+1. Generate models using `pipeline.py` (year concept evaluation is NOT run during pipeline)
+2. Evaluate and visualize using `analyze_year_concept.ipynb`
+
+**Step 1: Generate Dataset (One-time)**
+```bash
+python scripts/generate_year_concept_eval.py
+```
+This creates `data/year_concept_eval/year_concept.jsonl` with ~300 questions.
+
+**Step 2: Generate Models**
+```bash
+python pipeline.py \
+    datasets=[YEARS] \
+    unlearn.types=[LORA] \
+    unlearn.lora_ranks=[8,16,32,64,128] \
+    model_id="Qwen/Qwen2.5-3B-Instruct"
+```
+
+**Step 3: Evaluate and Visualize**
+Open `analyze_year_concept.ipynb`:
+1. Set configuration:
+   ```python
+   RUN_NAME = "2025-12-28_05-13-18"  # Your run name
+   MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"  # Your base model
+   LORA_RANKS = None  # Evaluate all ranks, or [8, 16, 32]
+   ```
+2. Run all cells to evaluate models and generate visualizations
+
+**Output:**
+- CSV: `evals/pipeline/year_concept/{timestamp}--num{i}.csv`
+- Plots: `figures/year_concept/*.png` (overall disruption, per-metric breakdown, correlation analysis)
+- Summary: `figures/year_concept/summary_table.csv`
+
+**Note:** The notebook automatically discovers models from `models/{run_name}/manifest.json`. It evaluates the baseline model (lora_rank=0) and all LoRA-unlearned models (type A).
+
+**Evidence:** (`analyze_year_concept.ipynb`)
+
 ### (f) Multi-GPU Distributed Training
 
 The pipeline automatically uses Ray for distributed training:
@@ -821,6 +928,8 @@ After running experiments, expect this structure:
 │       │   └── {timestamp}--num{i}.csv      # A: Unlearn metrics
 │       ├── ft/
 │       │   └── {timestamp}--num{i}.csv     # B/C: RTT metrics
+│       ├── year_concept/
+│       │   └── {timestamp}--num{i}.csv     # Year concept evaluation metrics
 │       └── summary/
 │           └── {timestamp}.csv               # A/B/C summary with baseline
 ├── pipeline_error.log          # If errors occur

@@ -63,6 +63,7 @@ For detailed workflows and examples, see [AGENTS.md](AGENTS.md).
 - `pipeline.py`: Main orchestration script for experiments.
 - `unlearn_corpus.py`: Implementation of most unlearning methods.
 - `finetune_corpus.py`: Used for fine-tuning and RTT.
+- `analyze_year_concept.ipynb`: Notebook for year concept disruption evaluation and visualization.
 - `conf/`: Hydra configuration files.
 - `data/`: Directory for dataset files.
 - `utils/`: Utility modules (attention backend, metrics, etc.).
@@ -83,6 +84,24 @@ Results are returned as dictionaries from Ray remote functions. The pipeline sav
 - **WandB logs**: Remote WandB project (configured via `wandb_project_name`)
 
 The pipeline includes a baseline pre-flight check that validates the model knows the information before unlearning. Set `baseline_min_forget_acc=0` to disable this check.
+
+## Year Concept Evaluation
+
+To evaluate general year understanding (ordering, arithmetic, classification) on unlearned models:
+
+1. Generate the evaluation dataset (one-time):
+   ```bash
+   python scripts/generate_year_concept_eval.py
+   ```
+
+2. Generate models using `pipeline.py` (year concept evaluation is NOT run during pipeline)
+
+3. Evaluate and visualize using `analyze_year_concept.ipynb`:
+   - Open the notebook and set `RUN_NAME` and `MODEL_ID`
+   - Run all cells to evaluate models and generate visualizations
+   - Results are written to `evals/pipeline/year_concept/{timestamp}--num{i}.csv`
+
+See [AGENTS.md](AGENTS.md) section "(e.1) Run Year Concept Evaluation" for detailed instructions.
 
 ## Prerequisites
 

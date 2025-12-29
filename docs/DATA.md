@@ -45,6 +45,7 @@ The repository includes several datasets in the `data/` directory:
 - **FineWeb-Edu**: `data/fineweb_edu_seed-42/` - Contains retain dataset splits (`split_*.jsonl`)
 - **Random Birthdays**: `data/random_bd/` - Contains corpus and MCQ data for random birthday experiments
 - **WMDP**: `data/wmdp-deduped/` - Contains deduplicated WMDP dataset files
+- **Year Concept Evaluation**: `data/year_concept_eval/year_concept.jsonl` - Generated dataset for evaluating general year understanding (ordering, arithmetic, classification). Generate using `python scripts/generate_year_concept_eval.py`
 
 ## External / User-Supplied Data
 
@@ -58,6 +59,7 @@ Some datasets may need to be provided manually depending on your use case. The p
 2. MMLU: `data/mmlu_cats_random_trimmed`
 3. WMDP-Deduped: `data/wmdp-deduped`
 4. Random Birthdays: `data/random_bd`
+5. Year Concept Evaluation: `data/year_concept_eval/` (generated dataset)
 
 ### Dataset Files Naming Interpretation
 
@@ -103,6 +105,16 @@ Some datasets may need to be provided manually depending on your use case. The p
   "answer": 2
 }
 ```
+
+#### Year Concept Evaluation Format (`data/year_concept_eval/year_concept.jsonl`)
+```json
+{
+  "question": "Which year is earlier: 1998 or 2003?",
+  "choices": ["1998", "2001", "2003", "2005"],
+  "answer": 0
+}
+```
+**Note:** This dataset is generated deterministically using `scripts/generate_year_concept_eval.py`. It contains ~300 questions testing year ordering, arithmetic, and decade/century classification.
 
 ## Manifest
 
