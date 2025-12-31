@@ -1,0 +1,73 @@
+defaults:
+  - default
+  - _self_
+
+# Learned Top-K Block Selection Configuration
+# This config enables learned Top-K block selection for LoRA unlearning
+# During training, exactly K transformer blocks will have active LoRA adapters
+# (selected via learned gate logits with Top-K hard mask and straight-through estimator)
+# The checkpoint is hardened by zeroing non-selected LoRA weights before saving
+
+# Enable learned Top-K block selection
+unlearn:
+  types: [LORA]
+  lora_ranks: [16]  # Single rank for learned top-K
+  save_unlearn_model: true  # Save all K-sweep models
+  types_config:
+    LORA:
+      # Learned Top-K Configuration
+      layer_selection_mode: "learned_topk_hard"  # Enable learned top-K selection
+      # Sweep over K values: [6, 12, 18, 24] covers sparse to substantial selection
+      # For Qwen/Qwen2.5-3B-Instruct (36 layers), these are reasonable values
+      lora_layer_budget_k: [2, 6, 12, 18, 24]  # Number of blocks to select (must be ≤ num_layers, must be > 0)
+      gate_tau_start: 10.0  # Initial temperature (softer selection - higher = more exploration)
+      gate_tau_end: 0.1  # Final temperature (harder selection - lower = more deterministic)
+      gate_warmup_steps: 0  # Steps before temperature annealing begins (0 = start annealing immediately)
+      gate_seed: null  # Random seed for gate initialization (null = use data_seed)
+      gate_reg_coeff: 0.0  # L2 regularization on gate logits (0.0 = no regularization)
+      # Fixed hyperparameters for K-sweep (no grid search)
+      # Matches default.yaml LORA -> YEARS configuration
+      datasets_config:
+        YEARS:
+          epochs_lst: [6]  # Matches default.yaml
+          lrs: [4e-7]  # Matches default.yaml
+          rcs:
+            range: []  # Matches default.yaml
+            add: [0.001]  # Matches default.yaml
+
+# Project name for this experiment
+wandb_project_name: "topk_lora_experiment"
+
+# Model configuration (matches default.yaml)
+model_id: "Qwen/Qwen2.5-3B-Instruct"  # Same as default.yaml (36 layers)
+datasets: [YEARS]  # Change to your desired dataset(s)
+
+# Matched Forgetting Configuration
+# DISABLED - Just running K-sweep with fixed hyperparameters (no grid search)
+matched_forgetting:
+  enabled: false
+
+# Run configuration
+dont_ft: false  # Set to true to skip RTT phase, false to run full pipeline
+baseline_min_forget_acc: 0.3  # Baseline validation threshold (set to 0 to disable)
+
+# RTT configuration (if dont_ft=false)
+ft:
+  save_models: true  # Save RTT models for later use
+
+# Notes:
+# - lora_layer_budget_k must be ≤ num_layers (auto-detected from model_id)
+#   For Qwen/Qwen2.5-3B-Instruct (36 layers), K values [6, 12, 18, 24] are used
+#   This covers: 16.7%, 33.3%, 50%, and 66.7% of layers respectively
+# - lora_rank must be > 0 (LoRA must be enabled)
+# - When matched_forgetting.enabled=true:
+#   * For each K value, performs grid search over search_space hyperparameters
+#   * Selects checkpoint achieving target_forget_acc (closest to target, minimizing retain damage)
+#   * Only selected checkpoints are saved (save_unlearn_model should be false)
+#   * Results stored in models/{run_name}/matched_forgetting.json
+#   * RTT phase automatically runs on selected checkpoints
+#   * Runtime: ~3 hours (4 K values × 4 trials = 16 training runs, ~10-12 min each)
+# - Checkpoints will be saved with K in path: rank{rank}-k{K}-sc{sc}-{model_id}-...
+# - Gate metadata (selected_blocks, final_gate_scores) stored in manifest
+# - WandB logs include: gating/selected_blocks_step, gating/temperature, gating/flip_rate
+

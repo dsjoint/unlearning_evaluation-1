@@ -62,19 +62,19 @@
       "gate_seed": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.05
+          "0": 0.6392405063291139
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.35
+          "0": 0.6815286624203821
         }
       },
       "forget_accs_calibrated": {
@@ -132,9 +132,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Niall. I am a Senior Lecturer",
-          "Once upon a time, there was a young girl named Lily who lived in",
-          "The capital of France is Paris. ____\nA. Correct\nB."
+          "Hi, my name is Sarah. I am a 14 year old",
+          "Once upon a time, there was a beautiful princess who lived in a castle",
+          "The capital of France, Paris, is known for its rich cultural heritage and"
         ]
       }
     },
@@ -210,19 +210,19 @@
       "gate_seed": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.3
+          "0": 0.6751592356687898
         }
       },
       "forget_accs_calibrated": {
@@ -280,9 +280,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Sam. I am 12 years old and",
-          "Once upon a time, there was a little girl named Emily. She had",
-          "The capital of France is Paris. A city in the United States has a"
+          "Hi, my name is Daniel and I am a 24 year old",
+          "Once upon a time, there was a king who loved to play with numbers",
+          "The capital of France, Paris, is known as the 'City of Light"
         ]
       }
     },
@@ -352,19 +352,19 @@
       "gate_seed": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.3
+          "0": 0.6751592356687898
         }
       },
       "forget_accs_calibrated": {
@@ -422,8 +422,8 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Michael and I am a first year student at the",
-          "Once upon a time, there was a boy named Aku who lived in",
+          "Hi, my name is Niki and I am a licensed clinical social worker",
+          "Once upon a time, there was a kingdom where the king loved to play",
           "The capital of France is Paris. Which of the following statements is true?\n"
         ]
       }
@@ -506,19 +506,19 @@
       "gate_seed": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 4.95
+          "0": 0.6265822784810127
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.1
+          "0": 0.6455696202531646
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -576,9 +576,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Michael and I am a student at the University of",
-          "Once upon a time, in a land far away, there was a magical",
-          "The capital of France, Paris, is known for its iconic landmarks and romantic"
+          "Hi, my name is John. I am a 27 year old",
+          "Once upon a time, there was a king who loved to play games.",
+          "The capital of France, Paris, is a city that has always been a"
         ]
       }
     },
@@ -666,19 +666,19 @@
       "gate_seed": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.05
+          "0": 0.6392405063291139
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.15
+          "0": 0.6518987341772152
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -736,9 +736,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is David. I am a student of the University of",
-          "Once upon a time, there was a king who had three sons. The",
-          "The capital of France is Paris. The capital of Germany is Berlin. The"
+          "Hi, my name is Michael and I'm a recovering math phobe.",
+          "Once upon a time, there was a king who loved to play chess.",
+          "The capital of France is Paris. The French language belongs to the Indo-European"
         ]
       }
     }
@@ -811,19 +811,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.25
+          "0": 0.6645569620253164
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.45
+          "0": 0.6942675159235668
         }
       },
       "forget_accs_calibrated": {
@@ -881,9 +881,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Sam and I'm 18. I'm",
-          "Once upon a time, there was a little girl who loved to dance.",
-          "The capital of France is Paris. A. Correct B. Incorrect C."
+          "Hi, my name is Amina. I'm 16 years old",
+          "Once upon a time, there was a king who loved to play hide-and",
+          "The capital of France is Paris. A. Correct B. Incorrect\nAnswer"
         ]
       }
     },
@@ -958,19 +958,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.3
+          "0": 0.6708860759493671
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.45
+          "0": 0.689873417721519
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.65
+          "0": 0.7151898734177216
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.5
+          "0": 0.7006369426751592
         }
       },
       "forget_accs_calibrated": {
@@ -1028,9 +1028,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Alex. I am a 16 year old",
-          "Once upon a time, there was a king who loved to play chess.",
-          "The capital of France is Paris, the capital of Italy is Rome, and"
+          "Hi, my name is Kaitlyn and I am a senior at the",
+          "Once upon a time, there was a king who had a beautiful daughter named",
+          "The capital of France is Paris. The following are some statements about Paris:\n"
         ]
       }
     },
@@ -1117,19 +1117,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.3
+          "0": 0.6708860759493671
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -1187,9 +1187,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Nastya and I am a 23",
-          "Once upon a time, there was a young woman named Jane. She lived",
-          "The capital of France is Paris, and it's also a city with a"
+          "Hi, my name is Jocelyn. I am a 20",
+          "Once upon a time, a young man named Jack was living in a small",
+          "The capital of France, Paris, is located in which region of France?\n"
         ]
       }
     },
@@ -1270,19 +1270,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.2
+          "0": 0.6582278481012658
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.45
+          "0": 0.689873417721519
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.65
+          "0": 0.7151898734177216
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -1340,9 +1340,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Sam and I\u2019m a 28 year old",
-          "Once upon a time, there was a king who loved to play chess.",
-          "The capital of France, Paris, is a city that has always attracted the"
+          "Hi, my name is Daniel. I'm a 20 year old",
+          "Once upon a time, there was a girl who lived in a small village",
+          "The capital of France is Paris, and the capital of Spain is Madrid."
         ]
       }
     },
@@ -1435,19 +1435,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.2
+          "0": 0.6582278481012658
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.55
+          "0": 0.7025316455696202
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.6
+          "0": 0.7133757961783439
         }
       },
       "forget_accs_calibrated": {
@@ -1505,9 +1505,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Alex and I\u2019m a 24 year old",
-          "Once upon a time, there was a little girl who loved to read.",
-          "The capital of France is Paris. ____\nA. Correct\nB."
+          "Hi, my name is Andrew and I am a 28 year old",
+          "Once upon a time, there was a young man named John. He lived",
+          "The capital of France, Paris, is the most visited major city in the"
         ]
       }
     }
@@ -1526,19 +1526,19 @@
       "skip_split": 4,
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.35
+          "0": 0.6772151898734177
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 5.6
+          "0": 0.7088607594936709
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.5
+          "0": 0.6962025316455697
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.85
+          "0": 0.740506329113924
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -1596,9 +1596,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is David. I am 15 years old and",
-          "Once upon a time, there was a princess who lived in a castle.",
-          "The capital of France, Paris, is a city with a long history and"
+          "Hi, my name is John. I am 12 years old.",
+          "Once upon a time, there was a man named John who lived in a",
+          "The capital of France, Paris is located on the Seine River. The"
         ]
       }
     }
@@ -1610,19 +1610,19 @@
       "dataset": "YEARS",
       "forget_accs": {
         "data/dates-years-trimmed/split_0.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_1.jsonl": {
-          "0": 4.75
+          "0": 0.6012658227848101
         },
         "data/dates-years-trimmed/split_2.jsonl": {
-          "0": 5.0
+          "0": 0.6329113924050633
         },
         "data/dates-years-trimmed/split_3.jsonl": {
-          "0": 5.05
+          "0": 0.6392405063291139
         },
         "data/dates-years-trimmed/split_4.jsonl": {
-          "0": 5.4
+          "0": 0.6878980891719745
         }
       },
       "forget_accs_calibrated": {
@@ -1680,9 +1680,9 @@
       "retain_accs_5_shot_calibrated": {},
       "samples": {
         "0": [
-          "Hi, my name is Alex and I'm a 21 year old",
-          "Once upon a time, there was a princess who loved to play with her",
-          "The capital of France, Paris, is a city of many museums and art"
+          "Hi, my name is Kaitlyn and I am a sophomore at the",
+          "Once upon a time, a small village had a tradition of celebrating the harvest",
+          "The capital of France, Paris, is located in which region of France?\n"
         ]
       }
     }
@@ -1756,19 +1756,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.25
+            "0": 0.6645569620253164
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.45
+            "0": 0.6942675159235668
           }
         },
         "forget_accs_calibrated": {
@@ -1861,9 +1861,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is Sam and I'm 18. I'm",
-            "Once upon a time, there was a little girl who loved to dance.",
-            "The capital of France is Paris. A. Correct B. Incorrect C."
+            "Hi, my name is Amina. I'm 16 years old",
+            "Once upon a time, there was a king who loved to play hide-and",
+            "The capital of France is Paris. A. Correct B. Incorrect\nAnswer"
           ]
         }
       },
@@ -1880,19 +1880,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.35
+            "0": 0.6772151898734177
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.5
+            "0": 0.6962025316455697
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.85
+            "0": 0.740506329113924
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -1985,9 +1985,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is David. I am 15 years old and",
-            "Once upon a time, there was a princess who lived in a castle.",
-            "The capital of France, Paris, is a city with a long history and"
+            "Hi, my name is John. I am 12 years old.",
+            "Once upon a time, there was a man named John who lived in a",
+            "The capital of France, Paris is located on the Seine River. The"
           ]
         }
       },
@@ -2069,19 +2069,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.3
+            "0": 0.6708860759493671
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.45
+            "0": 0.689873417721519
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.65
+            "0": 0.7151898734177216
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.5
+            "0": 0.7006369426751592
           }
         },
         "forget_accs_calibrated": {
@@ -2174,9 +2174,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is Alex. I am a 16 year old",
-            "Once upon a time, there was a king who loved to play chess.",
-            "The capital of France is Paris, the capital of Italy is Rome, and"
+            "Hi, my name is Kaitlyn and I am a senior at the",
+            "Once upon a time, there was a king who had a beautiful daughter named",
+            "The capital of France is Paris. The following are some statements about Paris:\n"
           ]
         }
       },
@@ -2193,19 +2193,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.35
+            "0": 0.6772151898734177
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.5
+            "0": 0.6962025316455697
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.85
+            "0": 0.740506329113924
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -2298,9 +2298,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is David. I am 15 years old and",
-            "Once upon a time, there was a princess who lived in a castle.",
-            "The capital of France, Paris, is a city with a long history and"
+            "Hi, my name is John. I am 12 years old.",
+            "Once upon a time, there was a man named John who lived in a",
+            "The capital of France, Paris is located on the Seine River. The"
           ]
         }
       },
@@ -2394,19 +2394,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.3
+            "0": 0.6708860759493671
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -2499,9 +2499,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is Nastya and I am a 23",
-            "Once upon a time, there was a young woman named Jane. She lived",
-            "The capital of France is Paris, and it's also a city with a"
+            "Hi, my name is Jocelyn. I am a 20",
+            "Once upon a time, a young man named Jack was living in a small",
+            "The capital of France, Paris, is located in which region of France?\n"
           ]
         }
       },
@@ -2518,19 +2518,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.35
+            "0": 0.6772151898734177
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.5
+            "0": 0.6962025316455697
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.85
+            "0": 0.740506329113924
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -2623,9 +2623,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is David. I am 15 years old and",
-            "Once upon a time, there was a princess who lived in a castle.",
-            "The capital of France, Paris, is a city with a long history and"
+            "Hi, my name is John. I am 12 years old.",
+            "Once upon a time, there was a man named John who lived in a",
+            "The capital of France, Paris is located on the Seine River. The"
           ]
         }
       },
@@ -2713,19 +2713,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.2
+            "0": 0.6582278481012658
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.45
+            "0": 0.689873417721519
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.65
+            "0": 0.7151898734177216
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -2818,9 +2818,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is Sam and I\u2019m a 28 year old",
-            "Once upon a time, there was a king who loved to play chess.",
-            "The capital of France, Paris, is a city that has always attracted the"
+            "Hi, my name is Daniel. I'm a 20 year old",
+            "Once upon a time, there was a girl who lived in a small village",
+            "The capital of France is Paris, and the capital of Spain is Madrid."
           ]
         }
       },
@@ -2837,19 +2837,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.35
+            "0": 0.6772151898734177
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.5
+            "0": 0.6962025316455697
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.85
+            "0": 0.740506329113924
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -2942,9 +2942,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is David. I am 15 years old and",
-            "Once upon a time, there was a princess who lived in a castle.",
-            "The capital of France, Paris, is a city with a long history and"
+            "Hi, my name is John. I am 12 years old.",
+            "Once upon a time, there was a man named John who lived in a",
+            "The capital of France, Paris is located on the Seine River. The"
           ]
         }
       },
@@ -3044,19 +3044,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.2
+            "0": 0.6582278481012658
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.55
+            "0": 0.7025316455696202
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.6
+            "0": 0.7133757961783439
           }
         },
         "forget_accs_calibrated": {
@@ -3149,9 +3149,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is Alex and I\u2019m a 24 year old",
-            "Once upon a time, there was a little girl who loved to read.",
-            "The capital of France is Paris. ____\nA. Correct\nB."
+            "Hi, my name is Andrew and I am a 28 year old",
+            "Once upon a time, there was a young man named John. He lived",
+            "The capital of France, Paris, is the most visited major city in the"
           ]
         }
       },
@@ -3168,19 +3168,19 @@
         "skip_split": 4,
         "forget_accs": {
           "data/dates-years-trimmed/split_0.jsonl": {
-            "0": 5.35
+            "0": 0.6772151898734177
           },
           "data/dates-years-trimmed/split_1.jsonl": {
-            "0": 5.6
+            "0": 0.7088607594936709
           },
           "data/dates-years-trimmed/split_2.jsonl": {
-            "0": 5.5
+            "0": 0.6962025316455697
           },
           "data/dates-years-trimmed/split_3.jsonl": {
-            "0": 5.85
+            "0": 0.740506329113924
           },
           "data/dates-years-trimmed/split_4.jsonl": {
-            "0": 5.4
+            "0": 0.6878980891719745
           }
         },
         "forget_accs_calibrated": {
@@ -3273,9 +3273,9 @@
         "retain_logits_5_shot_dict": {},
         "samples": {
           "0": [
-            "Hi, my name is David. I am 15 years old and",
-            "Once upon a time, there was a princess who lived in a castle.",
-            "The capital of France, Paris, is a city with a long history and"
+            "Hi, my name is John. I am 12 years old.",
+            "Once upon a time, there was a man named John who lived in a",
+            "The capital of France, Paris is located on the Seine River. The"
           ]
         }
       },

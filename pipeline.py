@@ -209,6 +209,7 @@ def parse_and_validate_list_config(
         ValueError: If value is invalid
     """
     import ast
+    from omegaconf import ListConfig
     
     param_name = param_name or key
     value = config_dict.get(key, default)
@@ -219,6 +220,10 @@ def parse_and_validate_list_config(
             value = ast.literal_eval(value)
         except Exception as e:
             raise ValueError(f"Invalid {param_name} format: {value}") from e
+    
+    # Convert OmegaConf ListConfig to Python list
+    if isinstance(value, ListConfig):
+        value = OmegaConf.to_container(value, resolve=True)
     
     # Validate type
     if not isinstance(value, (list, tuple)):
@@ -700,7 +705,7 @@ def select_matched_checkpoint(
     return min(in_tolerance, key=score)
 
 
-@ray.remote(num_gpus=1)
+@ray.remote
 def evaluate_baseline_retain_acc(
     model_id: str,
     val_retain_files: list[str],
@@ -713,11 +718,14 @@ def evaluate_baseline_retain_acc(
     
     Returns average retain accuracy across all retain validation files.
     Used for computing retain damage in matched-forgetting selection.
+    
+    Note: This function doesn't require GPU directly - just_eval.remote() handles GPU allocation.
     """
     import unlearn_corpus
     
     # Use just_eval to evaluate baseline model on retain set
     # Pass empty train_files to skip training, just evaluate
+    # just_eval.remote() will handle GPU allocation, so this function doesn't need num_gpus=1
     (
         model_path,
         forget_accs, forget_accs_calibrated, forget_logits_dict,
@@ -726,7 +734,7 @@ def evaluate_baseline_retain_acc(
         retain_logits_5_shot_dict,
         samples,
         gate_metadata
-    ) = unlearn_corpus.just_eval(
+    ) = ray.get(unlearn_corpus.just_eval.remote(
         train_files=[],
         wrong_unlearn_files=[],
         fixed_wrong_unlearn_files=[],
@@ -755,6 +763,7 @@ def evaluate_baseline_retain_acc(
         hydra_dict={},
         data_format=DataFormat.MCQ,  # Assume MCQ format for retain evaluation
         loss_type=LossType.LETTER,
+        unlearn_type=UnlearnType.GD,  # Required parameter, but not used when just_eval=True and train_files=[]
         lora_rank=0,
         use_4bit=False,
         bnb_4bit_compute_dtype="bf16",
@@ -764,7 +773,7 @@ def evaluate_baseline_retain_acc(
         grad_accum_steps=1,
         gradient_checkpointing=False,
         attn_backend=attn_backend,
-    )
+    ))
     
     # Extract average retain accuracy
     # Structure: {file: {epoch: accuracy}}
@@ -809,7 +818,7 @@ def evaluate_baseline_model(
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_impl,
     ).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, fix_mistral_regex=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -939,7 +948,8 @@ def unlearn(
             retain_accs, retain_accs_calibrated, retain_logits_dict,
             retain_accs_5_shot, retain_accs_5_shot_calibrated,
             retain_logits_5_shot_dict,
-            samples
+            samples,
+            gate_metadata
         ) = (
             unlearn_corpus.main(
                 unlearn_type=unlearn_type,
@@ -989,7 +999,8 @@ def unlearn(
             retain_accs, retain_accs_calibrated, retain_logits_dict,
             retain_accs_5_shot, retain_accs_5_shot_calibrated,
             retain_logits_5_shot_dict,
-            samples
+            samples,
+            gate_metadata
         ) = (
             unlearn_corpus.main(
                 unlearn_type=UnlearnType.GD,
@@ -1064,6 +1075,7 @@ def unlearn(
             steering_coeff=steering_coeff,
 	    max_samples=max_samples,
         )
+        gate_metadata = None  # CUT doesn't use gate metadata
     
     else:
         raise Exception("Unlearn type not handled")
@@ -1074,7 +1086,8 @@ def unlearn(
         retain_accs, retain_accs_calibrated, retain_logits_dict,
         retain_accs_5_shot, retain_accs_5_shot_calibrated,
         retain_logits_5_shot_dict,
-        samples
+        samples,
+        gate_metadata if 'gate_metadata' in locals() else None
     )
     
 # calls unlearning for one configuration of unlearning then RTT
@@ -1142,6 +1155,7 @@ def main(
     ft_batch_size: Optional[int] = None,  # Separate batch size for RTT (defaults to batch_size)
     ft_val_batch_size: Optional[int] = None,  # Separate val batch size for RTT (defaults to val_batch_size)
     run_name: str = "",  # Run name for organizing model outputs
+    collect_results: bool = False,  # Return lightweight A/B metrics for aggregation
 ):
     try:
         if num_total_splits is None:
@@ -1260,7 +1274,16 @@ def main(
                 ) = ray.get(ref)
             
             # Write manifest entry for A checkpoint if it was saved
-            if save_name is not None and not just_eval:
+            # Check if model was actually saved (model_path exists and is not empty/base model)
+            model_was_saved = (
+                model_path is not None 
+                and model_path != "" 
+                and model_path != base_model
+                and os.path.exists(model_path)
+                and os.path.exists(os.path.join(model_path, "config.json"))
+            )
+            
+            if model_was_saved and not just_eval:
                 # Extract metadata for A checkpoint
                 a_metadata = {
                     "run_name": run_name,
@@ -1300,12 +1323,52 @@ def main(
 
         if only_ft:
             model_path = ft_model_path
+            # Read A checkpoint's manifest entry to get correct metadata
+            manifest_path = os.path.join("models", run_name, "manifest.json")
+            if os.path.exists(manifest_path):
+                manifest_data = _read_json_with_lock(manifest_path, default=[])
+                if isinstance(manifest_data, list):
+                    # Find the Type A checkpoint entry matching model_path
+                    for entry in manifest_data:
+                        if entry.get("type") == "A" and entry.get("path") == model_path:
+                            # Override wandb_project_name with the project from A checkpoint
+                            if "project" in entry:
+                                wandb_project_name = entry["project"]
+                            # Override epochs with the epochs from A checkpoint
+                            if "epochs" in entry:
+                                epochs = entry["epochs"]
+                            # Override lr with the lr from A checkpoint
+                            if "lr" in entry:
+                                lr = entry["lr"]
+                            # Override retain_coeff with the retain_coeff from A checkpoint
+                            if "retain_coeff" in entry:
+                                retain_coeff = entry["retain_coeff"]
+                            # Override base_model with the model_id from A checkpoint
+                            if "model_id" in entry:
+                                base_model = entry["model_id"]
+                            # Override unlearn_type if method is specified
+                            if "method" in entry:
+                                try:
+                                    unlearn_type = UnlearnType[entry["method"]]
+                                except KeyError:
+                                    pass
+                            break
         if dont_ft or just_eval:
-            return
+            # Return the tuple even when skipping RTT
+            return (
+                model_path,
+                forget_accs, forget_accs_calibrated, forget_logits_dict,
+                retain_accs, retain_accs_calibrated, retain_logits_dict,
+                retain_accs_5_shot, retain_accs_5_shot_calibrated,
+                retain_logits_5_shot_dict,
+                samples,
+                gate_metadata if 'gate_metadata' in locals() else None
+            )
         # Use separate batch sizes for RTT if provided, otherwise use unlearning batch sizes
         rtt_batch_size = ft_batch_size if ft_batch_size is not None else batch_size
         rtt_val_batch_size = ft_val_batch_size if ft_val_batch_size is not None else val_batch_size
         ft_refs = []
+        collected_b_results: list[dict] = []
         # Compute RTT signature for matching B and C results
         rtt_sig = compute_rtt_signature(
             dataset.name, ft_loss_types, ft_lrs, ft_epochs_lst,
@@ -1368,6 +1431,29 @@ def main(
                                 lora_rank=lora_rank,
                                 steering_coeff=steering_coeff,
                             )
+                            
+                            # Read gate metadata from Type A checkpoint's manifest entry if available
+                            manifest_path = os.path.join("models", run_name, "manifest.json")
+                            if os.path.exists(manifest_path):
+                                manifest_data = _read_json_with_lock(manifest_path, default=[])
+                                if isinstance(manifest_data, list):
+                                    # Find the Type A checkpoint entry matching model_path
+                                    for entry in manifest_data:
+                                        if entry.get("type") == "A" and entry.get("path") == model_path:
+                                            # Extract gate metadata if present
+                                            if "lora_layer_budget_k" in entry:
+                                                parent_metadata["lora_layer_budget_k"] = entry.get("lora_layer_budget_k")
+                                            if "selected_blocks" in entry:
+                                                parent_metadata["selected_blocks"] = entry.get("selected_blocks")
+                                            if "final_gate_scores" in entry:
+                                                parent_metadata["final_gate_scores"] = entry.get("final_gate_scores")
+                                            if "gate_tau_start" in entry:
+                                                parent_metadata["gate_tau_start"] = entry.get("gate_tau_start")
+                                            if "gate_tau_end" in entry:
+                                                parent_metadata["gate_tau_end"] = entry.get("gate_tau_end")
+                                            if "gate_seed" in entry:
+                                                parent_metadata["gate_seed"] = entry.get("gate_seed")
+                                            break
                             
                             ref = finetune_corpus.main.remote(
                                 train_files=ft_files,
@@ -1459,8 +1545,126 @@ def main(
         while len(ft_refs) > 0:
             done_ft_refs, ft_refs = ray.wait(ft_refs)
             for done_ref in done_ft_refs:
-                ray.get(done_ref)
-    
+                ft_result = ray.get(done_ref)
+                if collect_results and isinstance(ft_result, dict) and ft_result:
+                    collected_b_results.append(ft_result)
+
+        if not collect_results:
+            return None
+
+        # Build a lightweight, JSON-serializable payload for downstream aggregation.
+        import datetime
+
+        def _strip_large_fields(d: dict) -> dict:
+            if not isinstance(d, dict):
+                return {}
+            return {
+                k: v
+                for k, v in d.items()
+                if k
+                not in [
+                    "forget_logits_dict",
+                    "retain_logits_dict",
+                    "retain_logits_5_shot_dict",
+                    "samples",
+                ]
+            }
+
+        # Prefer the saved checkpoint path when available; otherwise use the configured `name`
+        # as a stable identifier for this run (useful when checkpoints are not saved).
+        a_path = model_path if model_path else name
+
+        a_payload = {
+            "type": "A",
+            "path": a_path,
+            "saved": bool(model_was_saved) if "model_was_saved" in locals() else False,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "run_name": run_name,
+            "method": unlearn_type.name if hasattr(unlearn_type, "name") else str(unlearn_type),
+            "dataset": dataset.name if hasattr(dataset, "name") else str(dataset),
+            "project": wandb_project_name,
+            "model_id": base_model,
+            "lr": lr,
+            "epochs": epochs,
+            "retain_coeff": retain_coeff,
+            "data_seed": data_seed,
+            "eval_split_ids": list(eval_split_ids) if eval_split_ids is not None else None,
+            "num_total_splits": num_total_splits,
+            "lora_rank": lora_rank,
+            "steering_coeff": steering_coeff,
+            "forget_accs": forget_accs,
+            "forget_accs_calibrated": forget_accs_calibrated,
+            "retain_accs": retain_accs,
+            "retain_accs_calibrated": retain_accs_calibrated,
+            "retain_accs_5_shot": retain_accs_5_shot,
+            "retain_accs_5_shot_calibrated": retain_accs_5_shot_calibrated,
+        }
+        if gate_metadata:
+            a_payload.update(_strip_large_fields(gate_metadata))
+            if "lora_layer_budget_k" in gate_metadata:
+                a_payload["lora_layer_budget_k"] = gate_metadata.get("lora_layer_budget_k")
+            if "selected_blocks" in gate_metadata:
+                a_payload["selected_blocks"] = gate_metadata.get("selected_blocks")
+            if "final_gate_scores" in gate_metadata:
+                a_payload["final_gate_scores"] = gate_metadata.get("final_gate_scores")
+            if "gate_tau_start" in gate_metadata:
+                a_payload["gate_tau_start"] = gate_metadata.get("gate_tau_start")
+            if "gate_tau_end" in gate_metadata:
+                a_payload["gate_tau_end"] = gate_metadata.get("gate_tau_end")
+            if "gate_seed" in gate_metadata:
+                a_payload["gate_seed"] = gate_metadata.get("gate_seed")
+
+        # Normalize finetune results to match the notebook-style schema.
+        normalized_b: list[dict] = []
+        for b in collected_b_results:
+            b_clean = _strip_large_fields(b)
+            b_payload = {
+                "type": "B",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "run_name": run_name,
+                "method": unlearn_type.name if hasattr(unlearn_type, "name") else str(unlearn_type),
+                "dataset": dataset.name if hasattr(dataset, "name") else str(dataset),
+                "project": wandb_project_name,
+                "model_id": base_model,
+                "a_path": a_path,
+                "a_lr": lr,
+                "a_epochs": epochs,
+                "retain_coeff": retain_coeff,
+                "lora_rank": lora_rank,
+            }
+            # Copy over the FT-specific fields we care about (and normalize key names).
+            if "loss_type" in b_clean:
+                b_payload["loss_type"] = b_clean.get("loss_type")
+            if "lr" in b_clean:
+                b_payload["lr"] = b_clean.get("lr")
+            if "epochs" in b_clean:
+                b_payload["epochs"] = b_clean.get("epochs")
+            if "skip_split" in b_clean:
+                b_payload["skip_split"] = b_clean.get("skip_split")
+            if "checkpoint_type" in b_clean:
+                b_payload["checkpoint_type"] = b_clean.get("checkpoint_type")
+            if "name" in b_clean:
+                b_payload["path"] = b_clean.get("name")
+            elif "save_name" in b_clean and b_clean.get("save_name"):
+                b_payload["path"] = b_clean.get("save_name")
+            else:
+                b_payload["path"] = None
+
+            # Prefer standardized keys if available; fall back to finetune's *_local names.
+            b_payload["forget_accs"] = b_clean.get("forget_accs") or b_clean.get("forget_accs_local")
+            b_payload["forget_accs_calibrated"] = (
+                b_clean.get("forget_accs_calibrated")
+                or b_clean.get("forget_accs_calibrated_local")
+            )
+            b_payload["retain_accs"] = b_clean.get("retain_accs") or b_clean.get("retain_accs_local")
+            b_payload["retain_accs_calibrated"] = (
+                b_clean.get("retain_accs_calibrated")
+                or b_clean.get("retain_accs_calibrated_local")
+            )
+            normalized_b.append(b_payload)
+
+        return {"A": a_payload, "B": normalized_b}
+
     except ray.exceptions.RayTaskError as e:
         error_message = f"""\
             Exception in main:\n{str(e)}\n\n\
@@ -1923,10 +2127,13 @@ def run_pipeline(cfg: DictConfig) -> None:
             num_gpus = 8 if get_num_gpus() >= 8 else get_num_gpus()
         ray.init(num_gpus=num_gpus)
         refs = []
+        write_raw_results = bool(OmegaConf.select(cfg, "write_raw_results", default=False))
+        raw_results: dict[str, list[dict]] = {"A": [], "B": [], "C": [], "Baseline": []} if write_raw_results else {}
         
         # Baseline RTT tracking - deduplicate across hyperparameter points
         scheduled_baseline_rtt: set = set()  # (model_id, dataset.name, rtt_sig)
         baseline_rtt_refs: list = []
+        baseline_rtt_ref_metadata: dict = {}
 
         curr_time = datetime.datetime.now()
         curr_time_str = curr_time.strftime("%Y-%m-%d-%H-%M-%S")
@@ -2286,8 +2493,21 @@ def run_pipeline(cfg: DictConfig) -> None:
                         fixed_lora_rank = lora_ranks[0]
                         
                         # Parse K budget list (similar to how rc_range is parsed)
-                        if isinstance(lora_layer_budget_k, list):
-                            k_values = lora_layer_budget_k
+                        # Convert OmegaConf ListConfig to Python list if needed
+                        from omegaconf import ListConfig, DictConfig
+                        # Always convert OmegaConf objects to native Python types first
+                        # Try multiple methods to ensure conversion
+                        try:
+                            if OmegaConf.is_config(lora_layer_budget_k):
+                                lora_layer_budget_k = OmegaConf.to_container(lora_layer_budget_k, resolve=True)
+                            elif isinstance(lora_layer_budget_k, ListConfig):
+                                lora_layer_budget_k = list(lora_layer_budget_k)
+                        except Exception:
+                            pass  # If conversion fails, try isinstance checks below
+                        
+                        # Now check the native Python type
+                        if isinstance(lora_layer_budget_k, (list, tuple)):
+                            k_values = list(lora_layer_budget_k) if isinstance(lora_layer_budget_k, tuple) else lora_layer_budget_k
                         elif isinstance(lora_layer_budget_k, dict):
                             # Support range syntax like rc_range
                             k_range = parse_and_validate_list_config(
@@ -2300,7 +2520,11 @@ def run_pipeline(cfg: DictConfig) -> None:
                             )
                             k_values = k_range + k_add
                         else:
-                            raise ValueError(f"Invalid lora_layer_budget_k config: {lora_layer_budget_k}")
+                            # Last resort: try to convert to list if it's iterable
+                            try:
+                                k_values = list(lora_layer_budget_k)
+                            except (TypeError, ValueError):
+                                raise ValueError(f"Invalid lora_layer_budget_k config: {lora_layer_budget_k} (type: {type(lora_layer_budget_k)})")
                         
                         # Per-K matched forgetting search
                         print(f"\n{'='*60}")
@@ -2756,8 +2980,16 @@ def run_pipeline(cfg: DictConfig) -> None:
                     gate_reg_coeff = unlearn_type_config.get("gate_reg_coeff", 0.0)
                     # Add to config_flat so they're available in hydra_dict
                     config_flat["layer_selection_mode"] = layer_selection_mode
+                    # Handle K value sweep: if lora_layer_budget_k is a list, iterate over it
                     if lora_layer_budget_k is not None:
-                        config_flat["lora_layer_budget_k"] = lora_layer_budget_k
+                        if isinstance(lora_layer_budget_k, list):
+                            # Will iterate over K values in the loop below
+                            k_values_to_sweep = lora_layer_budget_k
+                        else:
+                            # Single K value - wrap in list for consistent handling
+                            k_values_to_sweep = [lora_layer_budget_k]
+                    else:
+                        k_values_to_sweep = [None]  # No K sweep
                     config_flat["gate_tau_start"] = gate_tau_start
                     config_flat["gate_tau_end"] = gate_tau_end
                     config_flat["gate_warmup_steps"] = gate_warmup_steps
@@ -2767,6 +2999,22 @@ def run_pipeline(cfg: DictConfig) -> None:
                 else:
                     layer_selection_mode = config_flat.get("layer_selection_mode", "none")
                     lora_layer_budget_k = config_flat.get("lora_layer_budget_k", None)
+                    # Handle K value sweep: if lora_layer_budget_k is a list, iterate over it
+                    # Convert OmegaConf ListConfig to Python list if needed
+                    from omegaconf import ListConfig
+                    if lora_layer_budget_k is not None:
+                        # Convert OmegaConf objects to native Python types first
+                        if OmegaConf.is_config(lora_layer_budget_k):
+                            lora_layer_budget_k = OmegaConf.to_container(lora_layer_budget_k, resolve=True)
+                        # Now check the native Python type
+                        if isinstance(lora_layer_budget_k, (list, tuple)):
+                            # Will iterate over K values in the loop below
+                            k_values_to_sweep = list(lora_layer_budget_k) if isinstance(lora_layer_budget_k, tuple) else lora_layer_budget_k
+                        else:
+                            # Single K value - wrap in list for consistent handling
+                            k_values_to_sweep = [lora_layer_budget_k]
+                    else:
+                        k_values_to_sweep = [None]  # No K sweep
                 
                 for dataset in datasets:
                     dataset_config = (
@@ -2810,33 +3058,40 @@ def run_pipeline(cfg: DictConfig) -> None:
                                     )
                                     for sc in scs:
                                         for lora_rank in ranks:
-                                            model_id_safe = model_id.replace('/', '_')
-                                            # Include K in save name if learned top-K is enabled
-                                            if layer_selection_mode == "learned_topk_hard" and lora_layer_budget_k is not None:
-                                                forget_model = (
-                                                    f"models/{run_name}/"
-                                                    f"{unlearn_type.name}/"
-                                                    f"{dataset.name}/"
-                                                    f"{wandb_project_name}/"
-                                                    f"rank{lora_rank}-k{lora_layer_budget_k}-sc{sc}-"
-                                                    f"{model_id_safe}-rc{rc}-lr{lr}-"
-                                                    f"epochs{epochs}"
+                                            # Iterate over K values if learned top-K is enabled
+                                            for k_budget in k_values_to_sweep:
+                                                model_id_safe = model_id.replace('/', '_')
+                                                # Include K in save name if learned top-K is enabled
+                                                if layer_selection_mode == "learned_topk_hard" and k_budget is not None:
+                                                    forget_model = (
+                                                        f"models/{run_name}/"
+                                                        f"{unlearn_type.name}/"
+                                                        f"{dataset.name}/"
+                                                        f"{wandb_project_name}/"
+                                                        f"rank{lora_rank}-k{k_budget}-sc{sc}-"
+                                                        f"{model_id_safe}-rc{rc}-lr{lr}-"
+                                                        f"epochs{epochs}"
+                                                    )
+                                                else:
+                                                    forget_model = (
+                                                        f"models/{run_name}/"
+                                                        f"{unlearn_type.name}/"
+                                                        f"{dataset.name}/"
+                                                        f"{wandb_project_name}/"
+                                                        f"rank{lora_rank}-sc{sc}-"
+                                                        f"{model_id_safe}-rc{rc}-lr{lr}-"
+                                                        f"epochs{epochs}"
+                                                    )
+                                                save_name = (
+                                                    forget_model if save_unlearn_model
+                                                    else None
                                                 )
-                                            else:
-                                                forget_model = (
-                                                    f"models/{run_name}/"
-                                                    f"{unlearn_type.name}/"
-                                                    f"{dataset.name}/"
-                                                    f"{wandb_project_name}/"
-                                                    f"rank{lora_rank}-sc{sc}-"
-                                                    f"{model_id_safe}-rc{rc}-lr{lr}-"
-                                                    f"epochs{epochs}"
-                                                )
-                                            save_name = (
-                                                forget_model if save_unlearn_model
-                                                else None
-                                            )
-                                            refs += [main.remote(
+                                                # Create a copy of config_flat for this run to avoid mutating shared dict
+                                                # This is critical when iterating over K values - each remote call needs its own copy
+                                                config_flat_copy = config_flat.copy()
+                                                if layer_selection_mode == "learned_topk_hard" and k_budget is not None:
+                                                    config_flat_copy["lora_layer_budget_k"] = k_budget
+                                                refs += [main.remote(
                                                 unlearn_type=unlearn_type,
                                                 dataset=dataset,
                                                 unlearn_files=(
@@ -2898,7 +3153,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 ft_freeze_layers=ft_freeze_layers,
                                                 ft_dont_eval=ft_dont_eval,
                                                 unlearn_mcq=unlearn_mcq,
-                                                hydra_dict=config_flat,
+                                                hydra_dict=config_flat_copy,
                                                 unlearn_data_format=(
                                                     unlearn_data_format
                                                 ),
@@ -2918,6 +3173,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                                 ft_batch_size=ft_batch_size,
                                                 ft_val_batch_size=ft_val_batch_size,
                                                 run_name=run_name,
+                                                collect_results=write_raw_results,
                                             )]
 
             # Schedule RTT for matched forgetting checkpoints (B)
@@ -3192,6 +3448,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         skip_split=skip_split,
                                     )
                                     baseline_rtt_refs.append(ref)
+                                    baseline_rtt_ref_metadata[ref] = c_metadata
 
         elif only_ft:
             for ft_model_path, dataset in ft_model_paths:
@@ -3277,6 +3534,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                     unlearn_loss_type=unlearn_loss_type,
                     attn_backend=attn_backend,
                     run_name=run_name,
+                    collect_results=write_raw_results,
                 )]
 
             # Schedule baseline RTT (C) for only_ft mode - same as normal pipeline
@@ -3375,6 +3633,7 @@ def run_pipeline(cfg: DictConfig) -> None:
                                         skip_split=skip_split,
                                     )
                                     baseline_rtt_refs.append(ref)
+                                    baseline_rtt_ref_metadata[ref] = c_metadata
 
 
         elif just_eval:
@@ -3463,12 +3722,19 @@ def run_pipeline(cfg: DictConfig) -> None:
                         run_name=run_name,
                     )]
 
+        # Always wait for scheduled main() tasks to finish; optionally collect results.
+        if refs:
+            print(f"\nWaiting for {len(refs)} main() task(s) to complete...")
         for ref in refs:
             try:
                 result = ray.get(ref)
-                # Extract model path and metadata if available
-                # The result from main() is a tuple, but we need to check structure
-                # For now, we'll collect models separately during unlearning phase
+                if write_raw_results and isinstance(result, dict) and result:
+                    a = result.get("A")
+                    b = result.get("B")
+                    if isinstance(a, dict) and a:
+                        raw_results["A"].append(a)
+                    if isinstance(b, list) and b:
+                        raw_results["B"].extend([x for x in b if isinstance(x, dict) and x])
             except ray.exceptions.RayTaskError as e:
                 error_message = f"""
                 Exception in main:\n{str(e)}\n\n\
@@ -3496,7 +3762,29 @@ def run_pipeline(cfg: DictConfig) -> None:
             done_refs, baseline_rtt_refs = ray.wait(baseline_rtt_refs)
             for done_ref in done_refs:
                 try:
-                    ray.get(done_ref)
+                    c_result = ray.get(done_ref)
+                    if write_raw_results and isinstance(c_result, dict) and c_result:
+                        # Tag and store; finetune_corpus returns checkpoint_type when invoked here.
+                        c_result = {k: v for k, v in c_result.items() if k not in ["forget_logits_dict", "retain_logits_dict", "samples"]}
+                        c_meta = baseline_rtt_ref_metadata.get(done_ref, {}) if isinstance(baseline_rtt_ref_metadata, dict) else {}
+                        # Normalize keys to align with other outputs.
+                        c_payload = {
+                            "type": "C",
+                            "timestamp": c_result.get("timestamp"),
+                            "run_name": run_name,
+                            "dataset": c_meta.get("dataset") or c_result.get("dataset"),
+                            "model_id": c_meta.get("model_id") or c_result.get("model_id") or c_result.get("base_model"),
+                            "loss_type": c_result.get("loss_type"),
+                            "lr": c_result.get("lr"),
+                            "epochs": c_result.get("epochs"),
+                            "skip_split": c_result.get("skip_split"),
+                            "path": c_result.get("name") or c_result.get("save_name"),
+                            "forget_accs": c_result.get("forget_accs") or c_result.get("forget_accs_local"),
+                            "forget_accs_calibrated": c_result.get("forget_accs_calibrated") or c_result.get("forget_accs_calibrated_local"),
+                            "retain_accs": c_result.get("retain_accs") or c_result.get("retain_accs_local"),
+                            "retain_accs_calibrated": c_result.get("retain_accs_calibrated") or c_result.get("retain_accs_calibrated_local"),
+                        }
+                        raw_results["C"].append(c_payload)
                 except ray.exceptions.RayTaskError as e:
                     error_message = f"""
                     Exception in baseline RTT:\n{str(e)}\n\n\
@@ -3515,6 +3803,15 @@ def run_pipeline(cfg: DictConfig) -> None:
                         error_file.write(error_message)
                     if raise_exceptions:
                         raise(e)
+
+        if write_raw_results:
+            import re
+            os.makedirs(os.path.join(results_dir, "summary"), exist_ok=True)
+            safe_run_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_name or "run")
+            out_path = os.path.join(results_dir, "summary", f"raw_results_{safe_run_name}.json")
+            with open(out_path, "w") as f:
+                json.dump(raw_results, f, indent=2, default=str)
+            print(f"Wrote raw metrics to {out_path}")
 
         emit_terminal_notice(f"[PIPELINE COMPLETE] {get_current_time()}")
         ray.shutdown()

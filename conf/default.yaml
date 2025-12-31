@@ -33,7 +33,9 @@ data_root: "data"
 # - null (default): Auto-generate timestamp-based name (YYYY-MM-DD_HH-MM-SS)
 # - string: Use specified name (required for RTT-only runs with only_ft=true)
 # This creates a top-level folder: models/{run_name}/...
-run_name: null
+
+#run_name: null
+run_name: "2025-12-28_05-13-18"
 batch_size: 8
 val_batch_size: 16
 warmup_steps: 24
@@ -45,6 +47,11 @@ eval_every: 2
 # - max_epoch: Use maximum accuracy across all epochs
 acc_selection_rule: final_epoch
 
+# When true, the driver collects per-run A/B/C forget+retain metrics and writes a
+# lightweight JSON file to `${results_dir}/summary/raw_results_${run_name}.json`.
+# This is useful for seed sweeps when you don't want to save large checkpoints.
+write_raw_results: false
+
 # Baseline model validation - skip experiments if base model doesn't know the info
 # Set to 0 to disable the check
 baseline_min_forget_acc: 0.3
@@ -53,7 +60,7 @@ unlearn:
   types: [LORA]
   many_cut_sc: true
   cut_scs: [0.1, 1, 10]
-  lora_ranks: [16, 32, 48]
+  lora_ranks: [2, 4]
   use_4bit: false  # Disabled for faster training (LoRA instead of QLoRA)
   bnb_4bit_quant_type: nf4
   bnb_4bit_compute_dtype: bf16

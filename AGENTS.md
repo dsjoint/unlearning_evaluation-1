@@ -183,11 +183,22 @@ User Invocation (CLI)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────┐
+│ Gate/Hook Registration (if learned top-K enabled)           │
+│ (unlearn_corpus.py:514-589, ~line 644)                      │
+│ - Initialize gate_logits parameters                         │
+│ - Register forward hooks on lora_B modules                  │
+│ - Compute initial Top-K mask                                │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
 │ Training Loop                                                │
-│ (unlearn_corpus.py:908-993)                                  │
+│ (unlearn_corpus.py:908-993, 1042-1096)                      │
 │ - Lion optimizer                                             │
 │ - get_loss() for forget/retain loss computation             │
 │ - Warmup scheduling                                          │
+│ - Gate mask update (learned top-K: Top-K hard + STE)        │
+│ - Temperature annealing                                      │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
@@ -206,6 +217,8 @@ User Invocation (CLI)
 │ model.save_pretrained(save_name)                            │
 │ tokenizer.save_pretrained(save_name)                        │
 │ - LoRA merge_and_unload() if applicable                     │
+│ - Checkpoint hardening (learned top-K: zero non-selected)   │
+│ - Remove gating hooks and parameters                        │
 └─────────────────────────────────────────────────────────────┘
     │
     ▼
@@ -514,7 +527,7 @@ models/2024-12-25_14-30-00/baseline_rtt/YEARS/TinyLlama_TinyLlama-1.1B-Chat-v1.0
 
 | File Type | Location Pattern | Generated When | Config Control |
 |-----------|-----------------|----------------|----------------|
-| **Unlearned Models** | `models/{run_name}/{method}/{dataset}/{project}/rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/` | Unlearning phase completes | `unlearn.save_unlearn_model` |
+| **Unlearned Models** | `models/{run_name}/{method}/{dataset}/{project}/rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/`<br/>With learned top-K: `rank{rank}-k{K}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/` | Unlearning phase completes | `unlearn.save_unlearn_model` |
 | **Fine-tuned Models (B)** | `models/{run_name}/fted/{method}/{dataset}/{project}/{loss_type}/ft-skip_split{skip}/lr{lr}-epoch{epochs}/` | RTT phase completes | `ft.save_models` |
 | **Baseline RTT Models (C)** | `models/{run_name}/baseline_rtt/{dataset}/{model_id}/{loss_type}/skip_split{skip}/lr{lr}-epoch{epochs}/` | Baseline RTT completes | `ft.save_models` |
 | **Checkpoint Manifest** | `models/{run_name}/manifest.json` | When any checkpoint is saved | Automatic (always written) | (`pipeline.py:538-570`) |
@@ -573,6 +586,13 @@ unlearn:
   types_config:
     LORA:
       loss_type: CORPUS   # CORPUS, LETTER, LETTER_ANSWER, etc.
+      layer_selection_mode: "none"  # "none" or "learned_topk_hard"
+      lora_layer_budget_k: null  # Required if layer_selection_mode="learned_topk_hard"
+      gate_tau_start: 10.0  # Initial temperature for learned top-K
+      gate_tau_end: 0.1  # Final temperature for learned top-K
+      gate_warmup_steps: 0  # Warmup steps before annealing
+      gate_seed: null  # Gate init seed (default: uses data_seed)
+      gate_reg_coeff: 0.0  # L2 regularization on gate logits
       datasets_config:
         YEARS:
           epochs_lst: [5]
@@ -725,6 +745,8 @@ python pipeline.py \
 ### (e.1) Run Matched Forgetting (LoRA)
 
 Run matched-forgetting selection for LoRA unlearning. For each LoRA rank, performs a grid search over hyperparameters, selects the checkpoint that achieves forget accuracy closest to target (default: 0.60 ± 0.02), then minimizes retain damage.
+
+**Note:** Matched forgetting also supports learned top-K block selection (see section (e.1.1)). When enabled, it sweeps over K values instead of ranks (single rank required).
 
 ```bash
 python pipeline.py \
@@ -999,7 +1021,8 @@ After running experiments, expect this structure:
 │       ├── {method}/            # e.g., LORA, GD
 │       │   └── {dataset}/       # e.g., YEARS
 │       │       └── {wandb_project}/
-│       │           └── rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/
+│       │           ├── rank{rank}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/  # Standard LoRA
+│       │           └── rank{rank}-k{K}-sc{sc}-{model_id}-rc{rc}-lr{lr}-epochs{epochs}/  # Learned top-K (K blocks)
 │       │               ├── config.json
 │       │               ├── model.safetensors
 │       │               └── tokenizer.json

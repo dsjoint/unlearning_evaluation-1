@@ -26,7 +26,7 @@ matched_forgetting:
 unlearn:
   types: [LORA]
   lora_ranks: [16, 32, 48]
-  save_unlearn_model: true
+  save_unlearn_model: false
   # Note: types_config.LORA settings are not used when matched_forgetting is enabled
   # The search_space in matched_forgetting takes precedence
 

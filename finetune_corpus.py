@@ -333,6 +333,11 @@ def main(
             )
             # Return empty results to match expected return format
             return {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "run_name": run_name,
+                "checkpoint_type": checkpoint_type,
+                "skip_split": skip_split,
+                "name": name,
                 "base_model": base_model,
                 "forget_accs_local": {},
                 "forget_accs_calibrated_local": {},
@@ -348,8 +353,18 @@ def main(
 
     curr_time = datetime.datetime.now()
     wandb.init(project=project_name, config={**locals(), "hydra_dict": hydra_dict}, name=name+f"---{curr_time}")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(diff_tokenizer if diff_tokenizer != "" else base_model)
+    # Use Ray-allocated GPU if available, otherwise fall back to CPU
+    # When Ray sets CUDA_VISIBLE_DEVICES, the GPU appears as cuda:0 to PyTorch
+    gpu_ids = ray.get_gpu_ids()
+    if gpu_ids:
+        # Ray has set CUDA_VISIBLE_DEVICES, so use cuda:0 (first visible GPU)
+        device = torch.device("cuda:0")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda:0")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device} (Ray GPU IDs: {gpu_ids}, CUDA available: {torch.cuda.is_available()})")
+    tokenizer = AutoTokenizer.from_pretrained(diff_tokenizer if diff_tokenizer != "" else base_model, fix_mistral_regex=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     tokenizer.truncation_side = "left"
@@ -541,7 +556,9 @@ def main(
             if train_on_wrong_answer:
                 metadata["train_on_wrong_answer"] = train_on_wrong_answer
             if hydra_dict:
-                metadata["hydra_dict"] = hydra_dict
+                # Convert OmegaConf objects to Python dict for JSON serialization
+                from omegaconf import OmegaConf
+                metadata["hydra_dict"] = OmegaConf.to_container(hydra_dict, resolve=True) if hydra_dict else None
             
             metadata_path = os.path.join(curr_save_name, "model_metadata.json")
             with open(metadata_path, "w") as f:
@@ -579,11 +596,38 @@ def main(
         if train_on_wrong_answer:
             metadata["train_on_wrong_answer"] = train_on_wrong_answer
         if hydra_dict:
-            metadata["hydra_dict"] = hydra_dict
+            # Convert OmegaConf objects to Python dict for JSON serialization
+            from omegaconf import OmegaConf, ListConfig, DictConfig
+            # Check if hydra_dict is already a dict or if it's an OmegaConf object
+            if isinstance(hydra_dict, dict):
+                # Already a dict, use as-is
+                metadata["hydra_dict"] = hydra_dict
+            else:
+                # OmegaConf object, convert to dict (recursively)
+                metadata["hydra_dict"] = OmegaConf.to_container(hydra_dict, resolve=True) if hydra_dict else None
+        
+        # Helper function to recursively convert OmegaConf objects to native Python types
+        def convert_omegaconf_to_native(obj):
+            from omegaconf import OmegaConf, ListConfig, DictConfig
+            if isinstance(obj, (ListConfig, list)):
+                return [convert_omegaconf_to_native(item) for item in obj]
+            elif isinstance(obj, (DictConfig, dict)):
+                return {key: convert_omegaconf_to_native(value) for key, value in obj.items()}
+            elif isinstance(obj, OmegaConf):
+                return OmegaConf.to_container(obj, resolve=True)
+            else:
+                return obj
+        
+        # Convert all OmegaConf objects in metadata to native Python types
+        metadata_serializable = convert_omegaconf_to_native(metadata)
         
         metadata_path = os.path.join(curr_save_name, "model_metadata.json")
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        try:
+            with open(metadata_path, "w") as f:
+                json.dump(metadata_serializable, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to write model_metadata.json: {e}")
+            # Continue anyway - manifest entry is more important
         
         # Write manifest entry if run_name is provided
         if run_name:
@@ -628,25 +672,15 @@ def main(
                 
             elif checkpoint_type == "C":
                 # C checkpoint: minimal metadata from parent_metadata
-                # Skip writing manifest entry if model already exists (to avoid duplicates)
-                if os.path.exists(curr_save_name) and os.path.exists(
-                    os.path.join(curr_save_name, "config.json")
-                ):
-                    print(
-                        f"Skipping manifest entry for baseline RTT - model already exists: {curr_save_name}"
-                    )
-                    # Skip manifest entry but continue with rest of function
-                    manifest_metadata = None  # Mark as skipped
-                else:
-                    manifest_metadata = {
-                        "dataset": parent_metadata.get("dataset") if parent_metadata else None,
-                        "model_id": parent_metadata.get("model_id", base_model) if parent_metadata else base_model,
-                        "loss_type": get_loss_type_str(loss_type),
-                        "lr": lr,
-                        "epochs": epochs,
-                    }
-                    if skip_split is not None:
-                        manifest_metadata["skip_split"] = skip_split
+                manifest_metadata = {
+                    "dataset": parent_metadata.get("dataset") if parent_metadata else None,
+                    "model_id": parent_metadata.get("model_id", base_model) if parent_metadata else base_model,
+                    "loss_type": get_loss_type_str(loss_type),
+                    "lr": lr,
+                    "epochs": epochs,
+                }
+                if skip_split is not None:
+                    manifest_metadata["skip_split"] = skip_split
             
             else:
                 raise ValueError(f"Unknown checkpoint_type: {checkpoint_type}")
@@ -666,6 +700,11 @@ def main(
     wandb.finish()
 
     return {
+        "timestamp": curr_time.isoformat(),
+        "run_name": run_name,
+        "checkpoint_type": checkpoint_type,
+        "skip_split": skip_split,
+        "name": name,
         "base_model": base_model,
         "forget_accs_local": forget_accs_local,
         "forget_accs_calibrated_local": forget_accs_calibrated_local,

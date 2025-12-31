@@ -537,11 +537,15 @@ def get_model_layers(model):
         # Not PEFT-wrapped
         actual_model = model
     
-    # Handle different model structures: Llama has model.model.layers, others might have model.layers
+    # Handle different model structures: Llama has model.layers, some wrap another model
     if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
         layers = actual_model.model.layers
+    elif hasattr(actual_model, 'model') and hasattr(actual_model.model, 'model') and hasattr(actual_model.model.model, 'layers'):
+        layers = actual_model.model.model.layers
     elif hasattr(actual_model, 'layers'):
         layers = actual_model.layers
+    elif hasattr(actual_model, 'transformer') and hasattr(actual_model.transformer, 'h'):
+        layers = actual_model.transformer.h
     else:
         raise AttributeError(f"Could not find layers attribute in model structure. actual_model type: {type(actual_model)}")
     
@@ -675,7 +679,7 @@ def main(
     max_seq_len = int(max_seq_len) if max_seq_len is not None else MAX_SEQ_LEN
     grad_accum_steps = max(1, int(grad_accum_steps))
     warmup_steps = max(1, int(warmup_steps))
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, fix_mistral_regex=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     tokenizer.truncation_side = "left"
@@ -742,6 +746,17 @@ def main(
     # Gate parameters for learned top-K selection
     layer_selection_mode = hydra_dict.get("layer_selection_mode", "none")
     lora_layer_budget_k = hydra_dict.get("lora_layer_budget_k", None)
+    # Convert OmegaConf ListConfig to Python int if needed
+    from omegaconf import OmegaConf
+    if lora_layer_budget_k is not None:
+        if OmegaConf.is_config(lora_layer_budget_k):
+            lora_layer_budget_k = OmegaConf.to_container(lora_layer_budget_k, resolve=True)
+        # If it's still a list, take the first element (shouldn't happen, but be safe)
+        if isinstance(lora_layer_budget_k, (list, tuple)) and len(lora_layer_budget_k) > 0:
+            lora_layer_budget_k = lora_layer_budget_k[0]
+        # Ensure it's an int
+        if lora_layer_budget_k is not None:
+            lora_layer_budget_k = int(lora_layer_budget_k)
     gate_logits = None
     num_layers = model.config.num_hidden_layers if hasattr(model, 'config') and hasattr(model.config, 'num_hidden_layers') else (model.base_model.config.num_hidden_layers if hasattr(model, 'base_model') and hasattr(model.base_model.config, 'num_hidden_layers') else None)
 
@@ -760,6 +775,8 @@ def main(
         # Initialize gate logits (small random values)
         # Use local RNG to avoid affecting global random state
         gate_seed = hydra_dict.get("gate_seed", data_seed)
+        if gate_seed is None:
+            gate_seed = data_seed
         rng = torch.Generator(device=device)
         rng.manual_seed(gate_seed)
         gate_logits = torch.nn.Parameter(
@@ -789,7 +806,11 @@ def main(
         use_triton=True,
     )
 
-    if unlearn_type.value == UnlearnType.GD.value:
+    # Handle dataset loading based on unlearn_type
+    # If just_eval=True and train_files=[], we skip training so dataset can be empty
+    if just_eval and len(train_files) == 0 and len(wrong_unlearn_files) == 0 and len(fixed_wrong_unlearn_files) == 0:
+        train_dataset = []  # Empty dataset for evaluation-only mode
+    elif unlearn_type.value == UnlearnType.GD.value:
         train_dataset = load_jsonl(
             [_data_path(data_root, file) for file in train_files]
         )
@@ -801,10 +822,27 @@ def main(
         train_dataset = load_jsonl(
             [_data_path(data_root, file) for file in fixed_wrong_unlearn_files]
         )
+    elif unlearn_type.value == UnlearnType.LORA.value:
+        # LORA can use any of the file lists, prefer train_files
+        if train_files:
+            train_dataset = load_jsonl(
+                [_data_path(data_root, file) for file in train_files]
+            )
+        elif wrong_unlearn_files:
+            train_dataset = load_jsonl(
+                [_data_path(data_root, file) for file in wrong_unlearn_files]
+            )
+        elif fixed_wrong_unlearn_files:
+            train_dataset = load_jsonl(
+                [_data_path(data_root, file) for file in fixed_wrong_unlearn_files]
+            )
+        else:
+            train_dataset = []  # Empty for evaluation-only
     else:
         raise Exception("Unlearning type not handled")
     
-    random.Random(data_seed).shuffle(train_dataset)
+    if train_dataset:
+        random.Random(data_seed).shuffle(train_dataset)
 
     if max_samples is not None:
         train_dataset = train_dataset[:max_samples]
@@ -860,9 +898,20 @@ def main(
     @torch.no_grad()
     def eval(time: int):
         model.eval()
+        # Update gate mask for evaluation using current learned gate_logits
+        # This ensures evaluation uses the current learned selection, not stale mask from last training step
+        if gate_logits is not None:
+            gate_tau_end = hydra_dict.get("gate_tau_end", 0.1)
+            s_eval = torch.sigmoid(gate_logits / gate_tau_end)
+            _, topk_indices_eval = torch.topk(s_eval, k=lora_layer_budget_k, dim=0)
+            m_eval = torch.zeros_like(s_eval)
+            m_eval.scatter_(0, topk_indices_eval, 1.0)
+            # Use hard mask for evaluation (no STE needed since we're not backpropagating)
+            model._gate_mask = m_eval
+        
         val_batches_lst = [(f, [val_dataset[i : i + val_batch_size] for i in range(0, len(val_dataset), val_batch_size)]) for f, val_dataset in val_datasets_lst]
         retain_batches_lst = [(f, [val_retain_dataset[i : i + val_batch_size] for i in range(0, len(val_retain_dataset), val_batch_size)]) for f, val_retain_dataset in val_retain_datasets_lst]
-        retain_batches_5_shot_lst = [(f, [val_retain_datasets_5_shot_lst[i : i + val_batch_size] for i in range(0, len(val_retain_dataset_5_shot), val_batch_size)]) for f, val_retain_dataset_5_shot in val_retain_datasets_5_shot_lst]
+        retain_batches_5_shot_lst = [(f, [val_retain_dataset_5_shot[i : i + val_batch_size] for i in range(0, len(val_retain_dataset_5_shot), val_batch_size)]) for f, val_retain_dataset_5_shot in val_retain_datasets_5_shot_lst]
         total_loss = 0
         total_acc = 0
         all_preds = []
@@ -881,7 +930,8 @@ def main(
             forget_accs[f] = {}
             forget_logits_dict[f] = {}
             forget_accs_calibrated[f] = {}
-            total_forget_acc = 0
+            total_forget_correct = 0
+            total_forget_count = 0
             total_forget_loss = 0
             forget_logits_lst = []
             last_labels_forget_lst = []
@@ -896,13 +946,19 @@ def main(
                     print_prefix="val prompts=",
                 )
                 forget_eval_loss, forget_acc, forget_logits_local = get_loss_and_acc(model, tokens, last_pos_label_ids_forget_local, label_possibilities)
-                total_forget_acc += forget_acc
+                total_forget_correct += forget_acc
+                total_forget_count += last_pos_label_ids_forget_local.shape[0]
                 total_forget_loss += forget_eval_loss
                 last_labels_forget_lst.append(last_pos_label_ids_forget_local)
                 forget_logits_lst.append(forget_logits_local)
 
-            total_forget_acc /= len(val_datasets_lst[j][1])
-            total_forget_loss /= len(val_datasets_lst[j][1])
+            # Handle empty batches (shouldn't happen, but be safe)
+            if total_forget_count > 0:
+                total_forget_acc = total_forget_correct / total_forget_count
+                total_forget_loss /= len(val_batches)
+            else:
+                total_forget_acc = 0.0
+                total_forget_loss = 0.0
             all_files_forget_acc += total_forget_acc
             all_files_forget_loss += total_forget_loss
             forget_accs[f][time] = total_forget_acc
@@ -913,12 +969,19 @@ def main(
             forget_logits_tensor = torch.tensor(forget_logits_standardized, device=device)
             forget_labels = label_possibilities_tensor[forget_logits_tensor.argmax(dim=-1)]
             forget_acc_calibrated = (forget_labels == last_labels_forget).float().mean().item()
-            all_files_forget_acc_calibrated == forget_acc_calibrated
+            all_files_forget_acc_calibrated += forget_acc_calibrated
             forget_accs_calibrated[f][time] = forget_acc_calibrated
 
-        all_files_forget_acc /= len(val_datasets_lst)
-        all_files_forget_acc_calibrated /= len(val_datasets_lst)
-        all_files_forget_loss /= len(val_datasets_lst)
+        # Handle case where val_datasets_lst is empty (evaluation-only on retain set)
+        if len(val_datasets_lst) > 0:
+            all_files_forget_acc /= len(val_datasets_lst)
+            all_files_forget_acc_calibrated /= len(val_datasets_lst)
+            all_files_forget_loss /= len(val_datasets_lst)
+        else:
+            # No forget evaluation, set to 0
+            all_files_forget_acc = 0.0
+            all_files_forget_acc_calibrated = 0.0
+            all_files_forget_loss = 0.0
         
         for j, (f, retain_batches) in tqdm(enumerate(retain_batches_lst), desc=f"Retain-eval"):
             retain_logits_dict[f] = {}
@@ -1183,7 +1246,11 @@ def main(
         if (not just_eval and (epoch + 1) % eval_every) == 0:
             eval_res = eval(epoch + 1)
             print(f"{eval_res['unlearning/forget_acc']=}, {eval_res['unlearning/retain_acc']=}")
-            if eval_res["unlearning/forget_acc"] < 0.5 and eval_res["unlearning/retain_acc"] > 0.5:
+            if (
+                save_name is not None
+                and eval_res["unlearning/forget_acc"] < 0.5
+                and eval_res["unlearning/retain_acc"] > 0.5
+            ):
                 temp_save_name = f"{save_name}_epoch{epoch + 1}_temp-save_forget{eval_res['unlearning/forget_acc']}_retain{eval_res['unlearning/retain_acc']}"
                 print(f"saving with name {temp_save_name=}")
                 model.save_pretrained(temp_save_name)
@@ -1206,7 +1273,7 @@ def main(
             "final_gate_scores": gate_logits.detach().cpu().tolist(),
             "gate_tau_start": hydra_dict.get("gate_tau_start", 10.0),
             "gate_tau_end": hydra_dict.get("gate_tau_end", 0.1),
-            "gate_seed": hydra_dict.get("gate_seed", data_seed),
+            "gate_seed": gate_seed,
         }
     
     if save_name is not None:
@@ -1226,7 +1293,8 @@ def main(
             layers, actual_model = get_model_layers(model)
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             
-            for layer_idx in range(num_layers):
+            # Use len(layers) which is more reliable than num_layers variable
+            for layer_idx in range(len(layers)):
                 if layer_idx not in selected_blocks_final:
                     layer = layers[layer_idx]
                     for module_name in target_modules:
